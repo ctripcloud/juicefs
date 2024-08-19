@@ -95,6 +95,27 @@ type Format struct {
 	MaxClientVersion string `json:",omitempty"`
 	DirStats         bool   `json:",omitempty"`
 	EnableACL        bool
+	TokenInfo        TokenInfo
+}
+
+// TokenInfo TODO 1.功能级权限管理：读写（增删改）执行；2.数据级权限管理
+type TokenInfo struct {
+	Token   string
+	Read    bool
+	Insert  bool
+	Update  bool
+	Delete  bool
+	Execute bool
+}
+
+// RedundancyInfo 冗余信息
+type RedundancyInfo struct {
+	TokenInfo TokenInfo
+}
+
+// TagInfo object tag
+type TagInfo struct {
+	Appid string
 }
 
 func (f *Format) update(old *Format, force bool) error {

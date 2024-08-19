@@ -245,7 +245,7 @@ func metaFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name:  "backup-meta",
-			Value: "1h",
+			Value: "0",
 			Usage: "interval to automatically backup metadata in the object storage (0 means disable backup)",
 		},
 		&cli.BoolFlag{
@@ -280,6 +280,10 @@ func metaFlags() []cli.Flag {
 			Value: "100ms",
 			Usage: "skip updating attribute of a directory if the mtime difference is smaller than this value",
 		},
+		&cli.StringFlag{
+			Name: "token",
+			Usage: "token for ctrip.com juicefs volume, visit shamu/ to get the token",
+		},
 	})
 }
 
@@ -310,6 +314,7 @@ func shareInfoFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "no-usage-report",
+			Value: true,
 			Usage: "do not send usage report",
 		},
 	})

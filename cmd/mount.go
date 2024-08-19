@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"encoding/base64"
 
 	"github.com/juicedata/juicefs/pkg/object"
 	"github.com/prometheus/client_golang/prometheus"
@@ -97,6 +98,7 @@ func exposeMetrics(c *cli.Context, registerer prometheus.Registerer, registry *p
 		},
 	))
 	registerer.MustRegister(collectors.NewBuildInfoCollector())
+	meta.InitTikvMetrics(registerer)
 
 	// If not set metrics addr,the port will be auto set
 	if !c.IsSet("metrics") {
@@ -616,6 +618,21 @@ func mount(c *cli.Context) error {
 		if err != nil {
 			return err
 		}
+		var token = c.String("token")
+		if token != "" {
+			removeTokenFile(format.Name)
+			createTokenFile(format.Name, token)
+		}else{
+			token = handleTokenInput(format.Name)
+			if token == "" {
+				logger.Fatalf("token is empty")
+			}
+		}
+		if token != format.TokenInfo.Token{
+			removeTokenFile(format.Name)
+			logger.Fatalf("token is error")
+		}
+		logger.Infof("Got correct trip.com token")
 	}
 
 	chunkConf := getChunkConf(c, format)
@@ -693,4 +710,80 @@ func mount(c *cli.Context) error {
 	object.Shutdown(blob)
 	logger.Infof("The juicefs mount process exit successfully, mountpoint: %s", metaConf.MountPoint)
 	return err
+}
+
+
+/**
+ *	1.用户输入token
+ *	2.写到隐藏文件，base64编码（fileDir = home/.trip_juicefs/volumeName, fileName = volume.to，文件存在则跳过）
+ *	3.读取隐藏文件，解码
+ *
+ *  backup: 守护进程执行无法获取 os.Stdin 中内容，由于隐藏文件存在，会直接从文件中读取
+ */
+func handleTokenInput(volumeName string) string {
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		logger.Fatalf("Get home dir error: %s", err)
+	}
+	tokenFilePathDir := dir + "/.trip_juicefs/" + volumeName
+	tokenFile := tokenFilePathDir + "/volume.to"
+	if !utils.Exists(tokenFile) {
+		fmt.Print("Input volume token > ")
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Scan()
+		tokenInput := scanner.Text()
+		if err = scanner.Err(); err != nil {
+			logger.Fatalf("Read token from stdin failed: %s", err)
+		}
+		err = createTokenFile(volumeName, tokenInput)
+		if err != nil {
+			logger.Fatalf("Create token file failed: %s", err)
+		}
+	}
+	encodeTokenBytes, err := os.ReadFile(tokenFile)
+	if err != nil {
+		logger.Fatalf("token read error")
+	}
+	tokenBytes, err := base64.StdEncoding.DecodeString(string(encodeTokenBytes))
+	if err != nil {
+		logger.Fatalf("Decode token from file failed: %s", err)
+	}
+	return string(tokenBytes)
+}
+
+func createTokenFile(volumeName, tokenStr string) error {
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		logger.Fatalf("Get home dir error: %s", err)
+	}
+	tokenFilePathDir := dir + "/.trip_juicefs/" + volumeName
+	tokenFile := tokenFilePathDir + "/volume.to"
+	if !utils.Exists(tokenFilePathDir) {
+		err := os.MkdirAll(tokenFilePathDir, 0777)
+		if err != nil {
+			return err
+		}
+	}
+	perm := os.FileMode(0777)
+
+	// base64 encode
+	encodeTokenStr := base64.StdEncoding.EncodeToString([]byte(tokenStr))
+	err = os.WriteFile(tokenFile, []byte(encodeTokenStr), perm)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func removeTokenFile(volumeName string) error{
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	tokenFilePathDir := dir + "/.trip_juicefs/" + volumeName
+	tokenFilePath := tokenFilePathDir + "/volume.to"
+	if !utils.Exists(tokenFilePath) {
+		return nil
+	}
+	return os.Remove(tokenFilePath)
 }
