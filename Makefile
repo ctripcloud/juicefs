@@ -21,31 +21,39 @@ endif
 
 juicefs: Makefile cmd/*.go pkg/*/*.go go.*
 	go version
+	go generate
 	go build -ldflags="$(LDFLAGS)"  -o juicefs .
 
 juicefs.cover: Makefile cmd/*.go pkg/*/*.go go.*
 	go version
+	go generate
 	go build -ldflags="$(LDFLAGS)"  -cover -o juicefs .
 
 juicefs.lite: Makefile cmd/*.go pkg/*/*.go
+	go generate
 	go build -tags nogateway,nowebdav,nocos,nobos,nohdfs,noibmcos,noobs,nooss,noqingstor,noscs,nosftp,noswift,noupyun,noazure,nogs,noufile,nob2,nonfs,nodragonfly,nosqlite,nomysql,nopg,notikv,nobadger,noetcd \
 		-ldflags="$(LDFLAGS)" -o juicefs.lite .
 
 juicefs.ceph: Makefile cmd/*.go pkg/*/*.go
+	go generate
 	go build -tags ceph -ldflags="$(LDFLAGS)"  -o juicefs.ceph .
 
 juicefs.fdb: Makefile cmd/*.go pkg/*/*.go
+	go generate
 	go build -tags fdb -ldflags="$(LDFLAGS)"  -o juicefs.fdb .
 
 juicefs.gluster: Makefile cmd/*.go pkg/*/*.go
+	go generate
 	go build -tags gluster -ldflags="$(LDFLAGS)"  -o juicefs.gluster .
 
 juicefs.all: Makefile cmd/*.go pkg/*/*.go
+	go generate
 	go build -tags ceph,fdb,gluster -ldflags="$(LDFLAGS)"  -o juicefs.all .
 
 # This is the script for compiling the Linux version on the MacOS platform.
 # Please execute the `brew install FiloSottile/musl-cross/musl-cross` command before using it.
 juicefs.linux:
+	go generate
 	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC=x86_64-linux-musl-gcc CGO_LDFLAGS="-static" go build -ldflags="$(LDFLAGS)"  -o juicefs .
 
 /usr/local/include/winfsp:

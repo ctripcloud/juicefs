@@ -26,8 +26,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/juicedata/juicefs/pkg/utils"
 	plog "github.com/pingcap/log"
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	"github.com/tikv/client-go/v2/config"
 	tikverr "github.com/tikv/client-go/v2/error"
@@ -37,6 +39,32 @@ import (
 	"github.com/tikv/client-go/v2/txnkv/txnutil"
 	"go.uber.org/zap"
 )
+
+var (
+	opCount = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "operation_count",
+		Help: "The number of times a method execute.",
+	},
+		[]string{"method_type"},
+	)
+	inFlight = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "in_flight_operations_count",
+		Help: "The number of operations in flight.",
+	},
+		[]string{"method_type"},
+	)
+)
+
+func opMetrics(methodType string) {
+	opCount.WithLabelValues(methodType).Add(1)
+}
+
+func InitTikvMetrics(reg prometheus.Registerer) {
+	if reg != nil {
+		reg.MustRegister(opCount)
+		reg.MustRegister(inFlight)
+	}
+}
 
 func init() {
 	Register("tikv", newKVMeta)
@@ -66,13 +94,30 @@ func newTikvClient(addr string) (tkvClient, error) {
 		return nil, err
 	}
 	query := tUrl.Query()
-	config.UpdateGlobal(func(conf *config.Config) {
-		conf.Security = config.NewSecurity(
-			query.Get("ca"),
-			query.Get("cert"),
-			query.Get("key"),
-			strings.Split(query.Get("verify-cn"), ","))
-	})
+	if query != nil && query.Has("ca") && query.Has("cert") && query.Has("key") {
+		config.UpdateGlobal(func(conf *config.Config) {
+			conf.Security = config.NewSecurity(
+				query.Get("ca"),
+				query.Get("cert"),
+				query.Get("key"),
+				strings.Split(query.Get("verify-cn"), ","))
+		})
+	} else {
+		logger.Infoln("TiKV use default security config")
+		// create tls files
+		ca, client_crt, client_key, err := utils.CreateCertFile([]byte(tikv_ca_crt), []byte(tikv_client_crt), []byte(tikv_client_key))
+		if err != nil {
+			return nil, err
+		}
+		config.UpdateGlobal(func(conf *config.Config) {
+			conf.Security = config.NewSecurity(
+				ca,
+				client_crt,
+				client_key,
+				[]string{})
+		})
+	}
+
 	interval := time.Hour * 3
 	if dur, err := time.ParseDuration(query.Get("gc-interval")); err == nil {
 		if dur != 0 && dur < time.Hour {
@@ -96,6 +141,7 @@ type tikvTxn struct {
 }
 
 func (tx *tikvTxn) get(key []byte) []byte {
+	defer opMetrics("get")
 	value, err := tx.Get(context.TODO(), key)
 	if tikverr.IsErrNotFound(err) {
 		return nil
@@ -107,6 +153,7 @@ func (tx *tikvTxn) get(key []byte) []byte {
 }
 
 func (tx *tikvTxn) gets(keys ...[]byte) [][]byte {
+	defer opMetrics("gets")
 	ret, err := tx.BatchGet(context.TODO(), keys)
 	if err != nil {
 		panic(err)
@@ -119,6 +166,10 @@ func (tx *tikvTxn) gets(keys ...[]byte) [][]byte {
 }
 
 func (tx *tikvTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v []byte) bool) {
+	inFlight.WithLabelValues("scan").Inc()
+	defer opMetrics("scan")
+	defer inFlight.WithLabelValues("scan").Desc()
+
 	it, err := tx.Iter(begin, end)
 	if err != nil {
 		panic(err)
@@ -132,6 +183,7 @@ func (tx *tikvTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v []by
 }
 
 func (tx *tikvTxn) exist(prefix []byte) bool {
+	defer opMetrics("exist")
 	it, err := tx.Iter(prefix, nextKey(prefix))
 	if err != nil {
 		panic(err)
@@ -141,17 +193,20 @@ func (tx *tikvTxn) exist(prefix []byte) bool {
 }
 
 func (tx *tikvTxn) set(key, value []byte) {
+	defer opMetrics("set")
 	if err := tx.Set(key, value); err != nil {
 		panic(err)
 	}
 }
 
 func (tx *tikvTxn) append(key []byte, value []byte) {
+	defer opMetrics("append")
 	new := append(tx.get(key), value...)
 	tx.set(key, new)
 }
 
 func (tx *tikvTxn) incrBy(key []byte, value int64) int64 {
+	defer opMetrics("incrBy")
 	buf := tx.get(key)
 	new := parseCounter(buf)
 	if value != 0 {
@@ -162,6 +217,7 @@ func (tx *tikvTxn) incrBy(key []byte, value int64) int64 {
 }
 
 func (tx *tikvTxn) delete(key []byte) {
+	defer opMetrics("delete")
 	if err := tx.Delete(key); err != nil {
 		panic(err)
 	}

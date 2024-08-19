@@ -25,6 +25,7 @@ import (
 
 var logger = utils.GetLogger("juicefs")
 
+//go:generate go run gen.go
 func main() {
 	err := cmd.Main(os.Args)
 	if err != nil {
