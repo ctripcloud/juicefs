@@ -5,69 +5,74 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/juicedata/juicefs/pkg/utils"
 )
 
+func genTlsConst(key, file string) (string, error) {
+	if !utils.Exists(file) {
+		return "", fmt.Errorf("key file not found")
+	}
+
+	fmt.Println("Reading file: ", file)
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("const %s = `%s`", key, string(data)), nil
+}
+
 func main() {
-	fmt.Println("Gen tls go files")
+	fmt.Println("Gen tls go files for metadata engines, config file ./tls/{tikv,etcd,...}/<crt files>")
 	pwd, err := os.Getwd()
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(-1)
 	}
-	tlsPathDir := pwd + "/tls"
-	if !utils.Exists(tlsPathDir) {
-		fmt.Println("必须将tls文件放在tls目录下")
+
+	tlsParentDir := pwd + "/tls"
+	if !utils.Exists(tlsParentDir) {
+		fmt.Println("tls dir %s not found", tlsParentDir)
 		os.Exit(-1)
 	}
-	filepath.Walk(tlsPathDir, func(path string, info os.FileInfo, err error) error {
+
+	metadaEngines := []string{"tikv", "etcd"}
+	for _, engine := range metadaEngines {
+		certDir := tlsParentDir + "/" + engine
+
+		if !utils.Exists(certDir) {
+			fmt.Printf("Skip generating for engine %s as tls dir not found\n", engine)
+			continue
+		}
+
+		fmt.Printf("Generating certificate files for metadata engine: %s\n", engine)
+
+		gofile := pwd + "/pkg/meta/" + engine + "-tls.go"
+		fmt.Println("Generating go file: ", gofile)
+
+		caData, err := genTlsConst(engine+"_ca_crt", certDir+"/ca.crt")
 		if err != nil {
-			fmt.Println(err)
-			return err
+			fmt.Printf("Generate ca data failed for engine %v: %v\n", engine, err)
+			os.Exit(-2)
 		}
-		if info.IsDir() && path != tlsPathDir {
-			name := info.Name()
-			gofile := pwd + "/pkg/meta/" + name + "-tls.go"
-			fmt.Println("Gen go file: ", gofile)
-			caCertFile := path + "/ca.crt"
-			caData, err := gen_tls_const(name+"_ca_crt", caCertFile)
-			if err != nil {
-				fmt.Println(err)
-				return err
-			}
-			clientCertFile := path + "/client.crt"
-			cilentCertData, err := gen_tls_const(name+"_client_crt", clientCertFile)
-			if err != nil {
-				fmt.Println(err)
-				return err
-			}
 
-			clientKeyFile := path + "/client.key"
-			clientKeyData, err := gen_tls_const(name+"_client_key", clientKeyFile)
-			if err != nil {
-				fmt.Println(err)
-				return err
-			}
-
-			data := fmt.Sprintf("package meta\n\n%s\n\n%s\n\n%s\n", caData, cilentCertData, clientKeyData)
-
-			os.WriteFile(gofile, []byte(data), 0666)
+		cilentCertData, err := genTlsConst(engine+"_client_crt", certDir+"/client.crt")
+		if err != nil {
+			fmt.Printf("Generate client cert data failed for engine %v: %v\n", engine, err)
+			os.Exit(-2)
 		}
-		return nil
-	})
-}
 
-func gen_tls_const(key, file string) (string, error) {
-	if !utils.Exists(file) {
-		return "", fmt.Errorf("key file not found")
+		clientKeyData, err := genTlsConst(engine+"_client_key", certDir+"/client.key")
+		if err != nil {
+			fmt.Printf("Generate client key data failed for engine %v: %v\n", engine, err)
+			os.Exit(-2)
+		}
+
+		data := fmt.Sprintf("package meta\n\n%s\n\n%s\n\n%s\n", caData, cilentCertData, clientKeyData)
+		os.WriteFile(gofile, []byte(data), 0666)
+		fmt.Printf("Generate tls go files for metadata engine %s done\n", engine)
 	}
-	fmt.Println("Read file: ", file)
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return "", err
-	}
-	out := fmt.Sprintf("const %s = `%s`", key, string(data))
-	return out, nil
+
+	fmt.Printf("Generate tls done\n")
 }
