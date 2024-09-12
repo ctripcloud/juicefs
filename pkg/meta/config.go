@@ -96,6 +96,7 @@ type Format struct {
 	DirStats         bool   `json:",omitempty"`
 	EnableACL        bool
 	TokenInfo        TokenInfo
+	TagInfo          TagInfo
 }
 
 // TokenInfo TODO 1.功能级权限管理：读写（增删改）执行；2.数据级权限管理

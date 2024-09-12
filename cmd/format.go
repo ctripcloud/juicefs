@@ -172,6 +172,14 @@ func formatFlags() []cli.Flag {
 			Name:  "shards",
 			Usage: "store the blocks into N buckets by hash of key",
 		},
+		&cli.StringFlag{
+			Name:  "token",
+			Usage: "format used token",
+		},
+		&cli.StringFlag{
+			Name:  "appid",
+			Usage: "format used appid",
+		},
 	})
 }
 
@@ -382,6 +390,12 @@ func format(c *cli.Context) error {
 		if c.Bool("no-update") {
 			return nil
 		}
+		if c.String("token") == "" {
+			logger.Fatalf("database(volume) is formatted，update volume need source token，please use --token")
+		} else if c.String("token") != format.TokenInfo.Token {
+			logger.Fatalf("database(volume) is formatted，update volume need source token，input token != source token")
+		}
+
 		format.Name = name
 		for _, flag := range c.LocalFlagNames() {
 			switch flag {
@@ -423,6 +437,18 @@ func format(c *cli.Context) error {
 		}
 	} else if strings.HasPrefix(err.Error(), "database is not formatted") {
 		create = true
+		token := c.String("token")
+		if token == "" {
+			token = uuid.New().String()
+		}
+		appidStr := c.String("appid")
+		if appidStr == "" {
+			logger.Fatalf("appid is required")
+		}
+		tagInfo := meta.TagInfo{
+			Appid: appidStr,
+		}
+
 		format = &meta.Format{
 			Name:             name,
 			UUID:             uuid.New().String(),
@@ -445,6 +471,15 @@ func format(c *cli.Context) error {
 			MetaVersion:      meta.MaxVersion,
 			MinClientVersion: "1.1.0-A",
 			EnableACL:        c.Bool("enable-acl"),
+			TokenInfo: meta.TokenInfo{
+				Token:   token,
+				Read:    true,
+				Insert:  true,
+				Update:  true,
+				Delete:  true,
+				Execute: true,
+			},
+			TagInfo: tagInfo,
 		}
 		if format.EnableACL {
 			format.MinClientVersion = "1.2.0-A"

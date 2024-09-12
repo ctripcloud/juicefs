@@ -102,3 +102,15 @@ func (c *prefixClient) reset(prefix []byte) error {
 func withPrefix(client tkvClient, prefix []byte) tkvClient {
 	return &prefixClient{client, prefix}
 }
+
+func (tx *prefixTxn) rawSet(key, value []byte) {
+	tx.kvTxn.set(key, value)
+}
+
+func (tx *prefixTxn) rawGet(key []byte) []byte {
+	return tx.kvTxn.get(key)
+}
+
+func (tx *prefixTxn) rawDelete(key []byte) {
+	tx.kvTxn.delete(key)
+}

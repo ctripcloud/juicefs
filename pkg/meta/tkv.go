@@ -162,6 +162,12 @@ func (m *kvMeta) fmtKey(args ...interface{}) []byte {
 	return b.Bytes()
 }
 
+func (m *kvMeta) tripKey(args ...interface{}) []byte {
+	key := m.fmtKey(args...)
+	key = append([]byte("$"), key...)
+	return key
+}
+
 /**
   Ino     iiiiiiii
   Length  llllllll
@@ -477,6 +483,18 @@ func (m *kvMeta) doInit(format *Format, force bool) error {
 				tx.set(m.inodeKey(TrashInode), m.marshal(attr))
 			}
 		}
+		tripInfo := RedundancyInfo{
+			TokenInfo: format.TokenInfo,
+		}
+		tripInfoBytes, err := json.MarshalIndent(tripInfo, "", "")
+		if err != nil {
+			logger.Errorf("json: %s", err)
+		}
+		p, ok := tx.kvtxn.(*prefixTxn)
+		if !ok {
+			logger.Fatalf("unexpected txn type: %T", tx.kvtxn)
+		}
+		p.rawSet(m.tripKey(format.Name), tripInfoBytes)
 		tx.set(m.fmtKey("setting"), data)
 		if body == nil || m.client.name() == "memkv" {
 			attr.Mode = 0777
@@ -506,7 +524,21 @@ func (m *kvMeta) cacheACLs(ctx Context) error {
 }
 
 func (m *kvMeta) Reset() error {
-	return m.client.reset(nil)
+	if err:= m.client.reset(nil); err != nil {
+		return err
+	}
+	return m.cleanTripInfo()
+}
+
+func (m *kvMeta) cleanTripInfo() error {
+	return m.txn(func(tx *kvTxn) error {
+		pTxn, ok := tx.kvtxn.(*prefixTxn)
+		if !ok {
+			logger.Fatalf("unexpected txn type: %T", tx.kvtxn)
+		}
+		pTxn.rawDelete(m.tripKey(m.getFormat().Name))
+		return nil
+	})
 }
 
 func (m *kvMeta) doLoad() ([]byte, error) {
