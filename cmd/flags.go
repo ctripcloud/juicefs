@@ -281,7 +281,7 @@ func metaFlags() []cli.Flag {
 			Usage: "skip updating attribute of a directory if the mtime difference is smaller than this value",
 		},
 		&cli.StringFlag{
-			Name: "token",
+			Name:  "token",
 			Usage: "token for ctrip.com juicefs volume, visit shamu/ to get the token",
 		},
 	})

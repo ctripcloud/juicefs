@@ -433,6 +433,12 @@ func format(c *cli.Context) error {
 				format.Storage = c.String(flag)
 			case "encrypt-rsa-key", "encrypt-algo":
 				logger.Warnf("Flag %s is ignored since it cannot be updated", flag)
+			case "meta-kvtxn-rate-limits":
+				if limits, err := parseMetaKvTxnRateLimits(c.String(flag)); err != nil {
+					logger.Fatalf("Parsing meta kvtxn rate limits failed: %v", err)
+				} else {
+					format.MetaKvTxnRateLimits = *limits
+				}
 			}
 		}
 	} else if strings.HasPrefix(err.Error(), "database is not formatted") {
@@ -480,6 +486,9 @@ func format(c *cli.Context) error {
 				Execute: true,
 			},
 			TagInfo: tagInfo,
+			// Note rate limits for all meta kvtxn methods on volumn creation.
+			// Change it later with `juicefs config --meta-kvtxn-rate-limits`.
+			MetaKvTxnRateLimits: meta.MetaKvTxnRateLimitConf{0, 0, 0, 0, 0, 0, 0, 0},
 		}
 		if format.EnableACL {
 			format.MinClientVersion = "1.2.0-A"

@@ -64,6 +64,10 @@ $ juicefs config redis://localhost --min-client-version 1.0.0 --max-client-versi
 					Name:  "download-limit",
 					Usage: "default bandwidth limit of a client for download in Mbps",
 				},
+				&cli.StringFlag{
+					Name:  "meta-kvtxn-rate-limits",
+					Usage: metaKvTxnRateLimitsUsage,
+				},
 			}),
 			formatManagementFlags(),
 			configManagementFlags(),
@@ -258,6 +262,39 @@ func config(ctx *cli.Context) error {
 					return errors.New("cannot disable acl")
 				}
 			}
+
+		// NOTE: for compatibility with trip.com 1.0.x clients
+		// Remove the following three cases when those clients go away.
+		case "volume-upload-limit":
+			if new := ctx.Int64(flag) * 1e6 / 8; new != format.VolumeUpLimit {
+				if new < 0 {
+					return fmt.Errorf("Invalid VolumeUpLimit: %d", new)
+				}
+				msg.WriteString(fmt.Sprintf("%s: %d -> %d\n", flag, format.VolumeUpLimit, new))
+				format.VolumeUpLimit = new
+			}
+		case "volume-download-limit":
+			if new := ctx.Int64(flag) * 1e6 / 8; new != format.VolumeDownLimit {
+				if new < 0 {
+					return fmt.Errorf("Invalid VolumeDownLimit: %d", new)
+				}
+				msg.WriteString(fmt.Sprintf("%s: %d -> %d\n", flag, format.VolumeDownLimit, new))
+				format.VolumeDownLimit = new
+			}
+		case "meta-interface-rate-limit":
+			if new := ctx.String(flag); new != format.MetaInterfaceRateLimit {
+				msg.WriteString(fmt.Sprintf("%s: %s -> %s\n", flag, format.MetaInterfaceRateLimit, new))
+				format.MetaInterfaceRateLimit = new
+			}
+
+		case "meta-kvtxn-rate-limits":
+			limits, err := parseMetaKvTxnRateLimits(ctx.String(flag))
+			if err != nil {
+				return fmt.Errorf("invalid meta kvtxn rate limit setting: %v", err)
+			}
+
+			msg.WriteString(fmt.Sprintf("%s: %+v -> %+v\n", flag, format.MetaKvTxnRateLimits, limits))
+			format.MetaKvTxnRateLimits = *limits
 		}
 	}
 	if msg.Len() == 0 {

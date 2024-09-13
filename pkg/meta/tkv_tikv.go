@@ -53,6 +53,14 @@ var (
 	},
 		[]string{"method_type"},
 	)
+
+	kvtxnRateLimitCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "meta_kvtxn_rate_limited_count",
+			Help: "The number of rate limited meta kvtxn operations.",
+		},
+		[]string{"method"},
+	)
 )
 
 func opMetrics(methodType string) {
@@ -63,6 +71,7 @@ func InitTikvMetrics(reg prometheus.Registerer) {
 	if reg != nil {
 		reg.MustRegister(opCount)
 		reg.MustRegister(inFlight)
+		reg.MustRegister(kvtxnRateLimitCount)
 	}
 }
 
@@ -142,6 +151,8 @@ type tikvTxn struct {
 
 func (tx *tikvTxn) get(key []byte) []byte {
 	defer opMetrics("get")
+	kvtxnRateLimit("get")
+
 	value, err := tx.Get(context.TODO(), key)
 	if tikverr.IsErrNotFound(err) {
 		return nil
@@ -154,6 +165,8 @@ func (tx *tikvTxn) get(key []byte) []byte {
 
 func (tx *tikvTxn) gets(keys ...[]byte) [][]byte {
 	defer opMetrics("gets")
+	kvtxnRateLimit("gets")
+
 	ret, err := tx.BatchGet(context.TODO(), keys)
 	if err != nil {
 		panic(err)
@@ -169,6 +182,7 @@ func (tx *tikvTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v []by
 	inFlight.WithLabelValues("scan").Inc()
 	defer opMetrics("scan")
 	defer inFlight.WithLabelValues("scan").Desc()
+	kvtxnRateLimit("scan")
 
 	it, err := tx.Iter(begin, end)
 	if err != nil {
@@ -184,6 +198,8 @@ func (tx *tikvTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v []by
 
 func (tx *tikvTxn) exist(prefix []byte) bool {
 	defer opMetrics("exist")
+	kvtxnRateLimit("exist")
+
 	it, err := tx.Iter(prefix, nextKey(prefix))
 	if err != nil {
 		panic(err)
@@ -194,6 +210,8 @@ func (tx *tikvTxn) exist(prefix []byte) bool {
 
 func (tx *tikvTxn) set(key, value []byte) {
 	defer opMetrics("set")
+	kvtxnRateLimit("set")
+
 	if err := tx.Set(key, value); err != nil {
 		panic(err)
 	}
@@ -201,12 +219,16 @@ func (tx *tikvTxn) set(key, value []byte) {
 
 func (tx *tikvTxn) append(key []byte, value []byte) {
 	defer opMetrics("append")
+	kvtxnRateLimit("append")
+
 	new := append(tx.get(key), value...)
 	tx.set(key, new)
 }
 
 func (tx *tikvTxn) incrBy(key []byte, value int64) int64 {
 	defer opMetrics("incrBy")
+	kvtxnRateLimit("incrBy")
+
 	buf := tx.get(key)
 	new := parseCounter(buf)
 	if value != 0 {
@@ -218,6 +240,8 @@ func (tx *tikvTxn) incrBy(key []byte, value int64) int64 {
 
 func (tx *tikvTxn) delete(key []byte) {
 	defer opMetrics("delete")
+	kvtxnRateLimit("delete")
+
 	if err := tx.Delete(key); err != nil {
 		panic(err)
 	}

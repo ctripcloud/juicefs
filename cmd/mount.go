@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
@@ -31,7 +32,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"encoding/base64"
 
 	"github.com/juicedata/juicefs/pkg/object"
 	"github.com/prometheus/client_golang/prometheus"
@@ -183,6 +183,9 @@ func updateFormat(c *cli.Context) func(*meta.Format) {
 		if c.IsSet("download-limit") {
 			format.DownloadLimit = utils.ParseMbps(c, "download-limit")
 		}
+
+		// Always respect to the rate limit settings in metadata engine
+		meta.ReloadMetaKvTxnRateLimiter(&format.MetaKvTxnRateLimits)
 	}
 }
 
@@ -622,13 +625,13 @@ func mount(c *cli.Context) error {
 		if token != "" {
 			removeTokenFile(format.Name)
 			createTokenFile(format.Name, token)
-		}else{
+		} else {
 			token = handleTokenInput(format.Name)
 			if token == "" {
 				logger.Fatalf("token is empty")
 			}
 		}
-		if token != format.TokenInfo.Token{
+		if token != format.TokenInfo.Token {
 			removeTokenFile(format.Name)
 			logger.Fatalf("token is error")
 		}
@@ -712,7 +715,6 @@ func mount(c *cli.Context) error {
 	return err
 }
 
-
 /**
  *	1.用户输入token
  *	2.写到隐藏文件，base64编码（fileDir = home/.trip_juicefs/volumeName, fileName = volume.to，文件存在则跳过）
@@ -775,7 +777,7 @@ func createTokenFile(volumeName, tokenStr string) error {
 	return nil
 }
 
-func removeTokenFile(volumeName string) error{
+func removeTokenFile(volumeName string) error {
 	dir, err := os.UserHomeDir()
 	if err != nil {
 		return err

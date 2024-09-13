@@ -95,8 +95,18 @@ type Format struct {
 	MaxClientVersion string `json:",omitempty"`
 	DirStats         bool   `json:",omitempty"`
 	EnableACL        bool
-	TokenInfo        TokenInfo
-	TagInfo          TagInfo
+
+	TokenInfo TokenInfo
+	TagInfo   TagInfo
+
+	// NOTE: for compatibility with trip.com 1.0.x juicefs clients.
+	// Remove the following three cases when those clients go away.
+	VolumeUpLimit          int64 // bytes per second
+	VolumeDownLimit        int64 // bytes per second
+	MetaInterfaceRateLimit string
+
+	// Rate limit settings for transaction kv metadata engines
+	MetaKvTxnRateLimits MetaKvTxnRateLimitConf `json:",omitempty"`
 }
 
 // TokenInfo TODO 1.功能级权限管理：读写（增删改）执行；2.数据级权限管理
