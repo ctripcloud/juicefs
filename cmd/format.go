@@ -195,7 +195,7 @@ func formatManagementFlags() []cli.Flag {
 		},
 		&cli.IntFlag{
 			Name:  "trash-days",
-			Value: 1,
+			Value: 0,
 			Usage: "number of days after which removed files will be permanently deleted",
 		},
 		&cli.BoolFlag{
