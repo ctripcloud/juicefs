@@ -421,39 +421,31 @@ func (v *VFS) Readdir(ctx Context, ino Ino, size uint32, off int, fh uint64, plu
 	h.Lock()
 	defer h.Unlock()
 
-	if h.children == nil || off == 0 {
-		var inodes []*meta.Entry
-		h.readAt = time.Now()
-		err = v.Meta.Readdir(ctx, ino, 1, &inodes)
-		if err == syscall.EACCES {
-			err = v.Meta.Readdir(ctx, ino, 0, &inodes)
+	if h.dirHandler == nil || off == 0 {
+		if h.dirHandler != nil {
+			h.dirHandler.Close()
+			h.dirHandler = nil
 		}
-		if err != 0 {
-			return
-		}
-		h.children = inodes
+		var initEntries []*meta.Entry
 		if ino == rootID && !v.Conf.HideInternal {
-			// add internal nodes
 			for _, node := range internalNodes[1:] {
-				h.children = append(h.children, &meta.Entry{
+				initEntries = append(initEntries, &meta.Entry{
 					Inode: node.inode,
 					Name:  []byte(node.name),
 					Attr:  node.attr,
 				})
 			}
 		}
-		index := make(map[string]int)
-		for i, e := range inodes {
-			index[string(e.Name)] = i
+		h.readAt = time.Now()
+		if h.dirHandler, err = v.Meta.NewDirHandler(ctx, ino, plus, initEntries); err != 0 {
+			return
 		}
-		h.index = index
 	}
-	if off < len(h.children) {
-		entries = h.children[off:]
-		// we don't know how much of them will be sent, assume all of them
-		h.readOff = len(h.children) - 1
+	if entries, err = h.dirHandler.List(ctx, off); err != 0 {
+		return
 	}
 	readAt = h.readAt
+	logger.Debugf("readdir: [%d:%d] %d entries, offset=%d", ino, fh, len(entries), off)
 	return
 }
 
@@ -464,7 +456,9 @@ func (v *VFS) UpdateReaddirOffset(ctx Context, ino Ino, fh uint64, off int) {
 	}
 	h.Lock()
 	defer h.Unlock()
-	h.readOff = off
+	if h.dirHandler != nil {
+		h.dirHandler.Read(off)
+	}
 }
 
 func (v *VFS) Releasedir(ctx Context, ino Ino, fh uint64) int {
