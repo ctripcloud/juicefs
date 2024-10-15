@@ -57,10 +57,6 @@ func Main(args []string) error {
 		EnableBashCompletion: true,
 		Flags:                globalFlags(),
 		Commands: []*cli.Command{
-			cmdFormat(),
-			cmdConfig(),
-			cmdQuota(),
-			cmdDestroy(),
 			cmdGC(),
 			cmdFsck(),
 			cmdRestore(),
@@ -86,6 +82,15 @@ func Main(args []string) error {
 			cmdSummary(),
 			cmdCompact(),
 		},
+	}
+
+	if version.TargetUser() == "admin" {
+		app.Commands = append(app.Commands, []*cli.Command{
+			cmdFormat(),
+			cmdConfig(),
+			cmdQuota(),
+			cmdDestroy(),
+		}...)
 	}
 
 	if calledViaMount(args) {

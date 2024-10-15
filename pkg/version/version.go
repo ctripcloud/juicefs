@@ -24,6 +24,7 @@ import (
 )
 
 var (
+	targetUser   = ""
 	revision     = "$Format:%h$" // value is assigned in Makefile
 	revisionDate = "$Format:%as$"
 	ver          = Semver{
@@ -40,6 +41,10 @@ type Semver struct {
 	preRelease, build   string
 }
 
+func TargetUser() string {
+	return targetUser
+}
+
 func Version() string {
 	pr := ver.preRelease
 	if pr != "" {
@@ -48,7 +53,11 @@ func Version() string {
 	if strings.Contains(ver.build, "Format") {
 		ver.build = "unknown"
 	}
-	return fmt.Sprintf("%d.%d.%d%s+%s", ver.major, ver.minor, ver.patch, pr, ver.build)
+	ver := fmt.Sprintf("%d.%d.%d%s+trip%s", ver.major, ver.minor, ver.patch, pr, ver.build)
+	if targetUser != "" {
+		ver += fmt.Sprintf("-%s", targetUser)
+	}
+	return ver
 }
 
 func SetVersion(v string) {

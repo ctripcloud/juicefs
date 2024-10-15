@@ -4,11 +4,13 @@ all: juicefs
 
 REVISION := $(shell git rev-parse --short HEAD 2>/dev/null)
 REVISIONDATE := $(shell git log -1 --pretty=format:'%cd' --date short 2>/dev/null)
+TARGETUSER ?= 
 PKG := github.com/juicedata/juicefs/pkg/version
 LDFLAGS = -s -w
 ifneq ($(strip $(REVISION)),) # Use git clone
 	LDFLAGS += -X $(PKG).revision=$(REVISION) \
-		   -X $(PKG).revisionDate=$(REVISIONDATE)
+		   -X $(PKG).revisionDate=$(REVISIONDATE) \
+			 -X $(PKG).targetUser=$(TARGETUSER)
 endif
 
 SHELL = /bin/sh
