@@ -94,7 +94,7 @@ func exposeMetrics(c *cli.Context, registerer prometheus.Registerer, registry *p
 		registry,
 		promhttp.HandlerOpts{
 			// Opt into OpenMetrics to support exemplars.
-			EnableOpenMetrics: true,
+			EnableOpenMetrics: false,
 		},
 	))
 	registerer.MustRegister(collectors.NewBuildInfoCollector())
