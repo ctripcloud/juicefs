@@ -45,13 +45,13 @@ var (
 		Name: "operation_count",
 		Help: "The number of times a method execute.",
 	},
-		[]string{"method_type"},
+		[]string{"method"},
 	)
 	inFlight = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "in_flight_operations_count",
 		Help: "The number of operations in flight.",
 	},
-		[]string{"method_type"},
+		[]string{"method"},
 	)
 
 	kvtxnRateLimitCount = prometheus.NewCounterVec(
