@@ -280,3 +280,10 @@ func Duration(s string) time.Duration {
 	}
 	return d + time.Hour*time.Duration(v*24)
 }
+
+func GetHomeDir() (string, error) {
+	if user, err := user.Current(); err == nil {
+		return user.HomeDir, nil
+	}
+	return "", fmt.Errorf("cannot get home directory")
+}

@@ -3,7 +3,7 @@ package utils
 import "os"
 
 func CreateCertFile(ca, cert, key []byte) (string, string, string, error) {
-	dir, err := os.UserHomeDir()
+	dir, err := GetHomeDir()
 	if err != nil {
 		return "", "", "", err
 	}

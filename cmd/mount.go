@@ -723,7 +723,7 @@ func mount(c *cli.Context) error {
  *  backup: 守护进程执行无法获取 os.Stdin 中内容，由于隐藏文件存在，会直接从文件中读取
  */
 func handleTokenInput(volumeName string) string {
-	dir, err := os.UserHomeDir()
+	dir, err := utils.GetHomeDir()
 	if err != nil {
 		logger.Fatalf("Get home dir error: %s", err)
 	}
@@ -754,7 +754,7 @@ func handleTokenInput(volumeName string) string {
 }
 
 func createTokenFile(volumeName, tokenStr string) error {
-	dir, err := os.UserHomeDir()
+	dir, err := utils.GetHomeDir()
 	if err != nil {
 		logger.Fatalf("Get home dir error: %s", err)
 	}
@@ -778,7 +778,7 @@ func createTokenFile(volumeName, tokenStr string) error {
 }
 
 func removeTokenFile(volumeName string) error {
-	dir, err := os.UserHomeDir()
+	dir, err := utils.GetHomeDir()
 	if err != nil {
 		return err
 	}
