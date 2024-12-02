@@ -627,9 +627,6 @@ func mount(c *cli.Context) error {
 			createTokenFile(format.Name, token)
 		} else {
 			token = handleTokenInput(format.Name)
-			if token == "" {
-				logger.Fatalf("token is empty")
-			}
 		}
 		if token != format.TokenInfo.Token {
 			removeTokenFile(format.Name)
@@ -737,8 +734,10 @@ func handleTokenInput(volumeName string) string {
 		if err = scanner.Err(); err != nil {
 			logger.Fatalf("Read token from stdin failed: %s", err)
 		}
-		err = createTokenFile(volumeName, tokenInput)
-		if err != nil {
+		if tokenInput == "" {
+			logger.Fatalf("Token input is empty")
+		}
+		if err = createTokenFile(volumeName, tokenInput); err != nil {
 			logger.Fatalf("Create token file failed: %s", err)
 		}
 	}
