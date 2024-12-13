@@ -202,7 +202,7 @@ func dataCacheFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name:  "cache-size",
-			Value: "100G",
+			Value: "10G",
 			Usage: "size of cached object for read in MiB",
 		},
 		&cli.Float64Flag{
