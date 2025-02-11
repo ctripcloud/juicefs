@@ -234,6 +234,11 @@ func dataCacheFlags() []cli.Flag {
 			Value: "0s",
 			Usage: "cached blocks not accessed for longer than this option will be automatically evicted (0 means never)",
 		},
+		&cli.StringFlag{
+			Name: "max-readahead",
+			Value: "100M",
+			Usage: "buffer size for readahead in MiB",
+		},
 	})
 }
 
