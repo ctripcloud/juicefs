@@ -360,6 +360,8 @@ func getChunkConf(c *cli.Context, format *meta.Format) *chunk.Config {
 		CacheScanInterval: utils.Duration(c.String("cache-scan-interval")),
 		CacheExpire:       utils.Duration(c.String("cache-expire")),
 		AutoCreate:        true,
+
+		Readahead: int(utils.ParseBytes(c, "max-readahead", 'M')),
 	}
 	if chunkConf.UploadLimit == 0 {
 		chunkConf.UploadLimit = format.UploadLimit * 1e6 / 8
