@@ -17,6 +17,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
@@ -69,8 +70,23 @@ $ juicefs gc redis://localhost --delete`,
 				Value:   10,
 				Usage:   "number threads to delete leaked objects",
 			},
+			&cli.BoolFlag{
+				Name: "leak-check",
+				Aliases: []string{"l"},
+				Value: true,
+				Usage: "check if there are leaked objects",
+			},
 		},
 	}
+}
+
+type JfsGCResult struct {
+	PendingDeletedFiles int64 `json:"pending_deleted_files"`
+	PendingDeletedData  int64 `json:"pending_deleted_data"`
+	CleanedDeletedFiles int64 `json:"cleaned_deleted_files"`
+	CleanedDeletedData  int64 `json:"cleaned_deleted_data"`
+	TrashFiles          int64 `json:"trash_files"`
+	TrashData           int64 `json:"trash_data"`
 }
 
 func gc(ctx *cli.Context) error {
@@ -139,6 +155,8 @@ func gc(ctx *cli.Context) error {
 	c := meta.WrapContext(ctx.Context)
 	delayedFileSpin := progress.AddDoubleSpinnerTwo("Pending deleted files", "Pending deleted data")
 	cleanedFileSpin := progress.AddDoubleSpinnerTwo("Cleaned pending files", "Cleaned pending data")
+	trashFileSpin := progress.AddDoubleSpinnerTwo("Pending trash files", "Pending trash data")
+
 	edge := time.Now().Add(-time.Duration(format.TrashDays) * 24 * time.Hour)
 	if delete {
 		cleanTrashSpin := progress.AddCountSpinner("Cleaned trash")
@@ -152,7 +170,11 @@ func gc(ctx *cli.Context) error {
 
 	err = m.ScanDeletedObject(
 		c,
-		nil, nil, nil,
+		nil, nil,
+		func(_ meta.Ino, size uint64, ts time.Time) (bool, error) {
+			trashFileSpin.IncrInt64(int64(size))
+			return false, nil
+		},
 		func(_ meta.Ino, size uint64, ts int64) (bool, error) {
 			delayedFileSpin.IncrInt64(int64(size))
 			if delete {
@@ -167,6 +189,24 @@ func gc(ctx *cli.Context) error {
 	}
 	delayedFileSpin.Done()
 	cleanedFileSpin.Done()
+	dpf, dpd := delayedFileSpin.Current()
+	dcf, dcd := cleanedFileSpin.Current()
+	tf, td := trashFileSpin.Current()
+	res := &JfsGCResult{
+		PendingDeletedFiles: dpf,
+		PendingDeletedData:  dpd,
+		CleanedDeletedFiles: dcf,
+		CleanedDeletedData:  dcd,
+		TrashFiles:          tf,
+		TrashData:           td,
+	}
+	resJson, _ := json.Marshal(res)
+	logger.Infof("juicefs gc result: %s", resJson)
+
+	if !ctx.Bool("leak-check") {
+		logger.Infof("add `--leak-check` to check if there are leaked objects")
+		return nil
+	}
 
 	if compact {
 		bar := progress.AddCountBar("Compacted chunks", 0)
