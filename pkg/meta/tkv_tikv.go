@@ -83,6 +83,7 @@ func newTikvClient(addr string) (tkvClient, error) {
 	}
 	logger.Infof("TiKV gc interval is set to %s", interval)
 
+	tikv.SetStoreLivenessTimeout(5 * time.Second)
 	client, err := txnkv.NewClient(strings.Split(tUrl.Host, ","))
 	if err != nil {
 		return nil, err
