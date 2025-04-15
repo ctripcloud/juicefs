@@ -82,6 +82,11 @@ func init() {
 }
 
 func newTikvClient(addr string) (tkvClient, error) {
+
+	// default timeout is 1 second, it is dangerous for a large number of tikv clients
+	// please check the issue: https://git.dev.sh.ctripcorp.com/dre/issues/-/issues/1008
+	tikv.SetStoreLivenessTimeout(time.Second * 5)
+
 	var plvl string // TiKV (PingCap) uses uber-zap logging, make it less verbose
 	switch logger.Level {
 	case logrus.TraceLevel:
