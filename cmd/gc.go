@@ -73,7 +73,7 @@ $ juicefs gc redis://localhost --delete`,
 			&cli.BoolFlag{
 				Name: "leak-check",
 				Aliases: []string{"l"},
-				Value: true,
+				Value: false,
 				Usage: "check if there are leaked objects",
 			},
 		},
