@@ -574,7 +574,7 @@ func mount(c *cli.Context) error {
 		logger.Fatalf("Invalid daemon stage: %d", stage)
 	}
 	supervisor := os.Getenv("JFS_SUPERVISOR")
-	if supervisor != "" {
+	if supervisor != "" || runtime.GOOS == "windows" {
 		stage = 3
 	}
 
