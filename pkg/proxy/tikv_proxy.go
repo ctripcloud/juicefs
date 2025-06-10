@@ -383,6 +383,15 @@ func (p *TiKVProxy) getTransaction(txnID string) (*Transaction, error) {
 
 // getOrCreateTransaction creates a new transaction if txnID is empty, otherwise retrieves an existing transaction
 func (p *TiKVProxy) getOrCreateTransaction(txnID string) (*Transaction, string, error) {
+	if txnID  == "read-only" {
+		txn, err := p.client.Begin(tikv.WithStartTS(math.MaxUint64))
+		if err != nil {
+			return nil, "", status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
+		}
+		return &Transaction{
+			tikv:    txn,
+		}, txnID, nil
+	}
 	if txnID == "" {
 		var err error
 		txnID, err = p.beginTxnInternal("")
@@ -400,7 +409,9 @@ func (p *TiKVProxy) getOrCreateTransaction(txnID string) (*Transaction, string, 
 
 // commitTxn commits a transaction and cleans up
 func (p *TiKVProxy) commitTxn(ctx context.Context, txnID string) error {
-
+	if txnID == "read-only" {
+		return nil
+	}
 	txn, err := p.getTransaction(txnID)
 	if err != nil {
 		return err
