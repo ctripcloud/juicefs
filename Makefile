@@ -104,3 +104,26 @@ test.cmd:
 
 test.fdb:
 	go test -v -cover -count=1  -failfast -timeout=4m ./pkg/meta/ -tags fdb -run=TestFdb -coverprofile=cov.out
+
+# Protocol Buffers
+PROTO_DIR = proto
+PROTO_OUT_DIR = pkg/proxy/v1
+
+.PHONY: proto
+proto: ## Generate protobuf code
+	@echo "Generating protobuf code..."
+	@mkdir -p $(PROTO_OUT_DIR)
+	@protoc \
+		--proto_path=$(PROTO_DIR) \
+		--go_out=$(PROTO_OUT_DIR) \
+		--go_opt=paths=source_relative \
+		--go-grpc_out=$(PROTO_OUT_DIR) \
+		--go-grpc_opt=paths=source_relative \
+		$(PROTO_DIR)/*.proto
+	@echo "Protobuf code generation completed"
+
+.PHONY: proto-clean
+proto-clean: ## Clean generated protobuf code
+	@echo "Cleaning generated protobuf code..."
+	@rm -rf $(PROTO_OUT_DIR)/*.pb.go
+	@echo "Protobuf code cleanup completed"

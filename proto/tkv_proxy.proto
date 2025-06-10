@@ -1,0 +1,152 @@
+syntax = "proto3";
+
+package juicefs.proxy.v1;
+
+option go_package = "github.com/juicedata/juicefs/pkg/proxy/v1;proxy";
+
+// TiKV Proxy Service
+service TxnProxyService {
+    // Begin a new transaction
+    rpc BeginTxn(BeginTxnRequest) returns (BeginTxnResponse);
+    
+    // Get a single key
+    rpc Get(GetRequest) returns (GetResponse);
+    
+    // Set a single key-value pair
+    rpc Set(SetRequest) returns (SetResponse);
+    
+    // Get a key with snapshot
+    rpc SnapGet(SnapGetRequest) returns (SnapGetResponse);
+
+    // BatchGet multiple keys with streaming response
+    rpc BatchGet(BatchGetRequest) returns (stream BatchGetResponse);
+    
+    // Delete a key
+    rpc Delete(DeleteRequest) returns (DeleteResponse);
+    
+    // Scan keys with streaming response
+    rpc Scan(ScanRequest) returns (stream ScanResponse);
+
+    // Scan snapshot
+    rpc ScanSnap(ScanSnapRequest) returns (stream ScanSnapResponse);
+
+    
+    // Commit transaction
+    rpc Commit(CommitRequest) returns (CommitResponse);
+    
+    // Rollback transaction
+    rpc Rollback(RollbackRequest) returns (RollbackResponse);
+}
+
+// Begin Transaction
+message BeginTxnRequest {
+    string proposal_uuid = 1; // Optional: proposed transaction ID
+}
+
+message BeginTxnResponse {
+    string txn_id = 1;
+}
+
+// Get single key
+message GetRequest {
+    string txn_id = 1;      // Optional: if empty, creates new transaction
+    bytes key = 2;
+    bool auto_commit = 3;   // Auto commit after operation
+}
+
+message GetResponse {
+    bytes value = 1;
+    string txn_id = 2;      // Transaction ID used/created
+}
+
+// Set key-value
+message SetRequest {
+    string txn_id = 1;      // Optional: if empty, creates new transaction
+    bytes key = 2;
+    bytes value = 3;
+    bool auto_commit = 4;   // Auto commit after operation
+}
+
+message SetResponse {
+    string txn_id = 1;      // Transaction ID used/created
+}
+
+// Get a key with snapshot
+message SnapGetRequest {
+    bytes key = 1;
+    uint64 snap_ts = 2;     // Snapshot timestamp
+}
+
+message SnapGetResponse {
+    // snapGet will not track the transaction, so the txn_id is not needed
+    bytes value = 1;
+}
+
+// BatchGet multiple keys (streaming response)
+message BatchGetRequest {
+    string txn_id = 1;      // Optional: if empty, creates new transaction
+    repeated bytes keys = 2;
+    bool auto_commit = 3;   // Auto commit after operation
+}
+
+message BatchGetResponse {
+    map<string, bytes> values = 1;
+    string txn_id = 2;      // Transaction ID used/created
+}
+
+// Delete key
+message DeleteRequest {
+    string txn_id = 1;      // Optional: if empty, creates new transaction
+    bytes key = 2;
+    bool auto_commit = 3;   // Auto commit after operation
+}
+
+message DeleteResponse {
+    string txn_id = 1;      // Transaction ID used/created
+}
+
+// Scan keys (streaming response)
+message ScanRequest {
+    string txn_id = 1;      // Optional: if empty, creates new transaction
+    bytes start_key = 2;    // Start key for scan
+    bytes end_key = 3;      // End key for scan (exclusive)
+    int32 scan_size = 4;    // Number of items to scan per stream response (default: 100)   
+    bool auto_commit = 5;   // Auto commit after operation
+}
+
+message ScanResponse {
+    map<string, bytes> values = 1;
+    string txn_id = 2;      // Transaction ID used/created
+}
+
+// Scan snapshot
+message ScanSnapRequest {
+    bytes start_key = 1;    // Start key for scan
+    bytes end_key = 2;      // End key for scan (exclusive)
+    uint64 snap_ts = 3;     // Snapshot timestamp
+    int32 scan_size = 4;    // Number of items to scan per stream response (default: 100)
+}
+
+message ScanSnapResponse {
+    map<string, bytes> values = 1;
+}
+
+
+// Commit transaction
+message CommitRequest {
+    string txn_id = 1; // transaction ID
+    map<string, bytes> values = 2; // key-value pairs to commit
+}
+
+message CommitResponse {
+    string txn_id = 1;
+}
+
+// Rollback transaction
+message RollbackRequest {
+    string txn_id = 1;
+}
+
+message RollbackResponse {
+    string txn_id = 1;
+} 
