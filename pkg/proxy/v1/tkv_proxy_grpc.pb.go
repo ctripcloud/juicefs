@@ -21,12 +21,8 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	TxnProxyService_BeginTxn_FullMethodName = "/juicefs.proxy.v1.TxnProxyService/BeginTxn"
 	TxnProxyService_Get_FullMethodName      = "/juicefs.proxy.v1.TxnProxyService/Get"
-	TxnProxyService_Set_FullMethodName      = "/juicefs.proxy.v1.TxnProxyService/Set"
-	TxnProxyService_SnapGet_FullMethodName  = "/juicefs.proxy.v1.TxnProxyService/SnapGet"
 	TxnProxyService_BatchGet_FullMethodName = "/juicefs.proxy.v1.TxnProxyService/BatchGet"
-	TxnProxyService_Delete_FullMethodName   = "/juicefs.proxy.v1.TxnProxyService/Delete"
 	TxnProxyService_Scan_FullMethodName     = "/juicefs.proxy.v1.TxnProxyService/Scan"
-	TxnProxyService_ScanSnap_FullMethodName = "/juicefs.proxy.v1.TxnProxyService/ScanSnap"
 	TxnProxyService_Commit_FullMethodName   = "/juicefs.proxy.v1.TxnProxyService/Commit"
 	TxnProxyService_Rollback_FullMethodName = "/juicefs.proxy.v1.TxnProxyService/Rollback"
 )
@@ -41,20 +37,12 @@ type TxnProxyServiceClient interface {
 	BeginTxn(ctx context.Context, in *BeginTxnRequest, opts ...grpc.CallOption) (*BeginTxnResponse, error)
 	// Get a single key
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
-	// Set a single key-value pair
-	Set(ctx context.Context, in *SetRequest, opts ...grpc.CallOption) (*SetResponse, error)
-	// Get a key with snapshot
-	SnapGet(ctx context.Context, in *SnapGetRequest, opts ...grpc.CallOption) (*SnapGetResponse, error)
 	// BatchGet multiple keys with streaming response
 	BatchGet(ctx context.Context, in *BatchGetRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[BatchGetResponse], error)
-	// Delete a key
-	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
 	// Scan keys with streaming response
 	Scan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ScanResponse], error)
-	// Scan snapshot
-	ScanSnap(ctx context.Context, in *ScanSnapRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ScanSnapResponse], error)
 	// Commit transaction
-	Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error)
+	Commit(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[CommitRequest, CommitResponse], error)
 	// Rollback transaction
 	Rollback(ctx context.Context, in *RollbackRequest, opts ...grpc.CallOption) (*RollbackResponse, error)
 }
@@ -87,26 +75,6 @@ func (c *txnProxyServiceClient) Get(ctx context.Context, in *GetRequest, opts ..
 	return out, nil
 }
 
-func (c *txnProxyServiceClient) Set(ctx context.Context, in *SetRequest, opts ...grpc.CallOption) (*SetResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SetResponse)
-	err := c.cc.Invoke(ctx, TxnProxyService_Set_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *txnProxyServiceClient) SnapGet(ctx context.Context, in *SnapGetRequest, opts ...grpc.CallOption) (*SnapGetResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SnapGetResponse)
-	err := c.cc.Invoke(ctx, TxnProxyService_SnapGet_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *txnProxyServiceClient) BatchGet(ctx context.Context, in *BatchGetRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[BatchGetResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &TxnProxyService_ServiceDesc.Streams[0], TxnProxyService_BatchGet_FullMethodName, cOpts...)
@@ -125,16 +93,6 @@ func (c *txnProxyServiceClient) BatchGet(ctx context.Context, in *BatchGetReques
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type TxnProxyService_BatchGetClient = grpc.ServerStreamingClient[BatchGetResponse]
-
-func (c *txnProxyServiceClient) Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DeleteResponse)
-	err := c.cc.Invoke(ctx, TxnProxyService_Delete_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
 
 func (c *txnProxyServiceClient) Scan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ScanResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -155,34 +113,18 @@ func (c *txnProxyServiceClient) Scan(ctx context.Context, in *ScanRequest, opts 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type TxnProxyService_ScanClient = grpc.ServerStreamingClient[ScanResponse]
 
-func (c *txnProxyServiceClient) ScanSnap(ctx context.Context, in *ScanSnapRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ScanSnapResponse], error) {
+func (c *txnProxyServiceClient) Commit(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[CommitRequest, CommitResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &TxnProxyService_ServiceDesc.Streams[2], TxnProxyService_ScanSnap_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &TxnProxyService_ServiceDesc.Streams[2], TxnProxyService_Commit_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[ScanSnapRequest, ScanSnapResponse]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
+	x := &grpc.GenericClientStream[CommitRequest, CommitResponse]{ClientStream: stream}
 	return x, nil
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type TxnProxyService_ScanSnapClient = grpc.ServerStreamingClient[ScanSnapResponse]
-
-func (c *txnProxyServiceClient) Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CommitResponse)
-	err := c.cc.Invoke(ctx, TxnProxyService_Commit_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
+type TxnProxyService_CommitClient = grpc.ClientStreamingClient[CommitRequest, CommitResponse]
 
 func (c *txnProxyServiceClient) Rollback(ctx context.Context, in *RollbackRequest, opts ...grpc.CallOption) (*RollbackResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -204,20 +146,12 @@ type TxnProxyServiceServer interface {
 	BeginTxn(context.Context, *BeginTxnRequest) (*BeginTxnResponse, error)
 	// Get a single key
 	Get(context.Context, *GetRequest) (*GetResponse, error)
-	// Set a single key-value pair
-	Set(context.Context, *SetRequest) (*SetResponse, error)
-	// Get a key with snapshot
-	SnapGet(context.Context, *SnapGetRequest) (*SnapGetResponse, error)
 	// BatchGet multiple keys with streaming response
 	BatchGet(*BatchGetRequest, grpc.ServerStreamingServer[BatchGetResponse]) error
-	// Delete a key
-	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
 	// Scan keys with streaming response
 	Scan(*ScanRequest, grpc.ServerStreamingServer[ScanResponse]) error
-	// Scan snapshot
-	ScanSnap(*ScanSnapRequest, grpc.ServerStreamingServer[ScanSnapResponse]) error
 	// Commit transaction
-	Commit(context.Context, *CommitRequest) (*CommitResponse, error)
+	Commit(grpc.ClientStreamingServer[CommitRequest, CommitResponse]) error
 	// Rollback transaction
 	Rollback(context.Context, *RollbackRequest) (*RollbackResponse, error)
 	mustEmbedUnimplementedTxnProxyServiceServer()
@@ -236,26 +170,14 @@ func (UnimplementedTxnProxyServiceServer) BeginTxn(context.Context, *BeginTxnReq
 func (UnimplementedTxnProxyServiceServer) Get(context.Context, *GetRequest) (*GetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Get not implemented")
 }
-func (UnimplementedTxnProxyServiceServer) Set(context.Context, *SetRequest) (*SetResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Set not implemented")
-}
-func (UnimplementedTxnProxyServiceServer) SnapGet(context.Context, *SnapGetRequest) (*SnapGetResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method SnapGet not implemented")
-}
 func (UnimplementedTxnProxyServiceServer) BatchGet(*BatchGetRequest, grpc.ServerStreamingServer[BatchGetResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method BatchGet not implemented")
-}
-func (UnimplementedTxnProxyServiceServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Delete not implemented")
 }
 func (UnimplementedTxnProxyServiceServer) Scan(*ScanRequest, grpc.ServerStreamingServer[ScanResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method Scan not implemented")
 }
-func (UnimplementedTxnProxyServiceServer) ScanSnap(*ScanSnapRequest, grpc.ServerStreamingServer[ScanSnapResponse]) error {
-	return status.Errorf(codes.Unimplemented, "method ScanSnap not implemented")
-}
-func (UnimplementedTxnProxyServiceServer) Commit(context.Context, *CommitRequest) (*CommitResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Commit not implemented")
+func (UnimplementedTxnProxyServiceServer) Commit(grpc.ClientStreamingServer[CommitRequest, CommitResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method Commit not implemented")
 }
 func (UnimplementedTxnProxyServiceServer) Rollback(context.Context, *RollbackRequest) (*RollbackResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Rollback not implemented")
@@ -317,42 +239,6 @@ func _TxnProxyService_Get_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
-func _TxnProxyService_Set_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SetRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(TxnProxyServiceServer).Set(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: TxnProxyService_Set_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TxnProxyServiceServer).Set(ctx, req.(*SetRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _TxnProxyService_SnapGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SnapGetRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(TxnProxyServiceServer).SnapGet(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: TxnProxyService_SnapGet_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TxnProxyServiceServer).SnapGet(ctx, req.(*SnapGetRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _TxnProxyService_BatchGet_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(BatchGetRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -363,24 +249,6 @@ func _TxnProxyService_BatchGet_Handler(srv interface{}, stream grpc.ServerStream
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type TxnProxyService_BatchGetServer = grpc.ServerStreamingServer[BatchGetResponse]
-
-func _TxnProxyService_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DeleteRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(TxnProxyServiceServer).Delete(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: TxnProxyService_Delete_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TxnProxyServiceServer).Delete(ctx, req.(*DeleteRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
 
 func _TxnProxyService_Scan_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(ScanRequest)
@@ -393,34 +261,12 @@ func _TxnProxyService_Scan_Handler(srv interface{}, stream grpc.ServerStream) er
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type TxnProxyService_ScanServer = grpc.ServerStreamingServer[ScanResponse]
 
-func _TxnProxyService_ScanSnap_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(ScanSnapRequest)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(TxnProxyServiceServer).ScanSnap(m, &grpc.GenericServerStream[ScanSnapRequest, ScanSnapResponse]{ServerStream: stream})
+func _TxnProxyService_Commit_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(TxnProxyServiceServer).Commit(&grpc.GenericServerStream[CommitRequest, CommitResponse]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type TxnProxyService_ScanSnapServer = grpc.ServerStreamingServer[ScanSnapResponse]
-
-func _TxnProxyService_Commit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CommitRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(TxnProxyServiceServer).Commit(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: TxnProxyService_Commit_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TxnProxyServiceServer).Commit(ctx, req.(*CommitRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
+type TxnProxyService_CommitServer = grpc.ClientStreamingServer[CommitRequest, CommitResponse]
 
 func _TxnProxyService_Rollback_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RollbackRequest)
@@ -456,22 +302,6 @@ var TxnProxyService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _TxnProxyService_Get_Handler,
 		},
 		{
-			MethodName: "Set",
-			Handler:    _TxnProxyService_Set_Handler,
-		},
-		{
-			MethodName: "SnapGet",
-			Handler:    _TxnProxyService_SnapGet_Handler,
-		},
-		{
-			MethodName: "Delete",
-			Handler:    _TxnProxyService_Delete_Handler,
-		},
-		{
-			MethodName: "Commit",
-			Handler:    _TxnProxyService_Commit_Handler,
-		},
-		{
 			MethodName: "Rollback",
 			Handler:    _TxnProxyService_Rollback_Handler,
 		},
@@ -488,9 +318,9 @@ var TxnProxyService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 		{
-			StreamName:    "ScanSnap",
-			Handler:       _TxnProxyService_ScanSnap_Handler,
-			ServerStreams: true,
+			StreamName:    "Commit",
+			Handler:       _TxnProxyService_Commit_Handler,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "tkv_proxy.proto",

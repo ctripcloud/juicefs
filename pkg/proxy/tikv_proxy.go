@@ -2,17 +2,23 @@ package proxy
 
 import (
 	"context"
+	"io"
 	"math"
+	"net/url"
+	"os"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/google/uuid"
+	meta "github.com/juicedata/juicefs/pkg/meta"
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
+	"github.com/juicedata/juicefs/pkg/utils"
+	plog "github.com/pingcap/log"
 	"github.com/sirupsen/logrus"
+	"github.com/tikv/client-go/v2/config"
+	tikverr "github.com/tikv/client-go/v2/error"
 	"github.com/tikv/client-go/v2/tikv"
 	"github.com/tikv/client-go/v2/txnkv"
-	"github.com/tikv/client-go/v2/txnkv/txnutil"
+	zap "go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -21,202 +27,220 @@ const (
 	batchSize = 100
 )
 
-type Transaction struct {
-	tikv     *tikv.KVTxn
-	startTS  uint64
-	commitTS uint64
-	created  time.Time
-}
-
 // TiKVProxy implements proxy for tikv with transaction management
 type TiKVProxy struct {
-	client       *txnkv.Client
-	transactions *sync.Map // map[string]*Transaction
-	cleanupTick  *time.Ticker
-	stopCh       chan struct{}
-	logger       *logrus.Entry
+	client *txnkv.Client
 	proxyv1.UnimplementedTxnProxyServiceServer
 }
 
+var logger = utils.GetLogger("juicefs")
+
 func NewTiKVProxy(addr string) (*TiKVProxy, error) {
+	// default timeout is 1 second, it is dangerous for a large number of tikv clients
+	// please check the issue: https://git.dev.sh.ctripcorp.com/dre/issues/-/issues/1008
+	tikv.SetStoreLivenessTimeout(time.Second * 5)
+
+	var plvl string // TiKV (PingCap) uses uber-zap logging, make it less verbose
+	switch logger.Level {
+	case logrus.TraceLevel:
+		plvl = "debug"
+	case logrus.DebugLevel:
+		plvl = "info"
+	case logrus.InfoLevel, logrus.WarnLevel:
+		plvl = "warn"
+	case logrus.ErrorLevel:
+		plvl = "error"
+	default:
+		plvl = "dpanic"
+	}
+	l, prop, _ := plog.InitLogger(&plog.Config{Level: plvl}, zap.Fields(zap.String("component", "tikv"), zap.Int("pid", os.Getpid())))
+	plog.ReplaceGlobals(l, prop)
+	tUrl, err := url.Parse("tikv://" + addr)
+	if err != nil {
+		return nil, err
+	}
+	query := tUrl.Query()
+	if query != nil && query.Has("ca") && query.Has("cert") && query.Has("key") {
+		config.UpdateGlobal(func(conf *config.Config) {
+			conf.Security = config.NewSecurity(
+				query.Get("ca"),
+				query.Get("cert"),
+				query.Get("key"),
+				strings.Split(query.Get("verify-cn"), ","))
+		})
+	} else {
+		logger.Infoln("TiKV use default security config")
+		// create tls files
+		ca, client_crt, client_key, err := utils.CreateCertFile([]byte(meta.GetTIKVCaTlsData()), []byte(meta.GetTIKVClientCertTlsData()), []byte(meta.GetTIKVClientKeyTlsData()))
+		if err != nil {
+			return nil, err
+		}
+		config.UpdateGlobal(func(conf *config.Config) {
+			conf.Security = config.NewSecurity(
+				ca,
+				client_crt,
+				client_key,
+				[]string{})
+		})
+	}
+
+	interval := time.Hour * 3
+	if dur, err := time.ParseDuration(query.Get("gc-interval")); err == nil {
+		if dur != 0 && dur < time.Hour {
+			logger.Warnf("TiKV gc-interval (%s) is too short, and is reset to 1h", dur)
+			dur = time.Hour
+		}
+		interval = dur
+	}
+	logger.Infof("TiKV gc interval is set to %s", interval)
+	logger.Infof("TiKV addr is %s", addr)
+
 	client, err := txnkv.NewClient(strings.Split(addr, ","))
 	if err != nil {
 		return nil, err
 	}
 
 	proxy := &TiKVProxy{
-		client:       client,
-		transactions: &sync.Map{},
-		cleanupTick:  time.NewTicker(5 * time.Minute), // cleanup every 5 minutes
-		stopCh:       make(chan struct{}),
-		logger:       logrus.WithField("component", "tikv-proxy"),
+		client: client,
 	}
-
-	// Start cleanup routine for expired transactions
-	go proxy.cleanupExpiredTransactions()
 
 	return proxy, nil
 }
 
 func (p *TiKVProxy) Close() error {
-	if p.cleanupTick != nil {
-		p.cleanupTick.Stop()
-	}
-
-	// Clean up all active transactions
-	p.transactions.Range(func(key, value interface{}) bool {
-		p.transactions.Delete(key)
-		return true
-	})
-
 	return p.client.Close()
-}
-
-// BeginTxn implements TxnProxyServiceServer.BeginTxn
-func (p *TiKVProxy) BeginTxn(ctx context.Context, req *proxyv1.BeginTxnRequest) (*proxyv1.BeginTxnResponse, error) {
-	txnID, err := p.beginTxnInternal(req.ProposalUuid)
-	if err != nil {
-		return &proxyv1.BeginTxnResponse{
-		}, nil
-	}
-
-	return &proxyv1.BeginTxnResponse{
-		TxnId: txnID,
-	}, nil
 }
 
 // Get implements TxnProxyServiceServer.Get
 func (p *TiKVProxy) Get(ctx context.Context, req *proxyv1.GetRequest) (*proxyv1.GetResponse, error) {
-	txn, txnID, err := p.getOrCreateTransaction(req.TxnId)
+	startTS := req.StartTs
+	var txn *tikv.KVTxn
+	var err error
+	if startTS != 0 {
+		txn, err = p.client.Begin(tikv.WithStartTS(startTS))
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
+		}
+		if startTS == math.MaxUint64 {
+			txn.GetSnapshot().SetIsolationLevel(txnkv.RC) // RC isolation to skip lock checking in TiKV
+		}
+	} else {
+		txn, err = p.client.Begin()
+	}
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
 	}
 
-	// Get from TiKV
-	value, err := txn.tikv.Get(ctx, req.Key)
+	value, err := txn.Get(ctx, req.Key)
+	if tikverr.IsErrNotFound(err) {
+		return nil, nil
+	}
+
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to get key: %v", err)
 	}
 
-	// Auto commit if requested
-	if req.AutoCommit {
-		if commitErr := p.commitTxn(ctx, txnID); commitErr != nil {
-			return &proxyv1.GetResponse{
-				Value:        value,
-				TxnId:        txnID,
-			}, nil
-		}
-	}
-
 	return &proxyv1.GetResponse{
-		Value: value,
-		TxnId: txnID,
+		StartTs: txn.StartTS(),
+		Value:   value,
 	}, nil
-}
-
-// Set implements TxnProxyServiceServer.Set
-func (p *TiKVProxy) Set(ctx context.Context, req *proxyv1.SetRequest) (*proxyv1.SetResponse, error) {
-	txn, txnID, err := p.getOrCreateTransaction(req.TxnId)
-	if err != nil {
-		return nil, err
-	}
-
-	err = txn.tikv.Set(req.Key, req.Value)
-	if err != nil {
-		return &proxyv1.SetResponse{
-			TxnId:        req.TxnId,
-		}, nil
-	}
-
-	return &proxyv1.SetResponse{
-		TxnId: txnID,
-	}, nil
-
 }
 
 // BatchGet implements TxnProxyServiceServer.BatchGet
 func (p *TiKVProxy) BatchGet(req *proxyv1.BatchGetRequest, stream proxyv1.TxnProxyService_BatchGetServer) error {
-	txn, txnID, err := p.getOrCreateTransaction(req.TxnId)
+	startTS := req.StartTs
+
+	var txn *tikv.KVTxn
+	var err error
+	if startTS != 0 {
+		txn, err = p.client.Begin(tikv.WithStartTS(startTS))
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
+		}
+		if startTS == math.MaxUint64 {
+			txn.GetSnapshot().SetIsolationLevel(txnkv.RC) // RC isolation to skip lock checking in TiKV
+		}
+	} else {
+		txn, err = p.client.Begin()
+	}
 	if err != nil {
-		return err
+		return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
 	}
 
-	values, err := txn.tikv.BatchGet(stream.Context(), req.Keys)
+	kvRes, err := txn.BatchGet(stream.Context(), req.Keys)
 	if err != nil {
+		logger.Errorf("failed to batch get: %v", err)
 		return status.Errorf(codes.Internal, "failed to batch get: %v", err)
 	}
 
 	cnt := 0
-	batch := make(map[string][]byte)
-	for key, value := range values {
+	keys := make([][]byte, 0)
+	values := make([][]byte, 0)
+	for key, value := range kvRes {
 		if cnt >= batchSize {
 			if err := stream.Send(&proxyv1.BatchGetResponse{
-				Values: batch,
-				TxnId:  txnID,
+				Keys:    keys,
+				Values:  values,
+				StartTs: txn.StartTS(),
 			}); err != nil {
+				// Client closed the stream, stop processing immediately
 				return err
 			}
-			batch = make(map[string][]byte)
+			keys = make([][]byte, 0)
+			values = make([][]byte, 0)
 			cnt = 0
 		}
 		cnt++
-		batch[string(key)] = value
+		keys = append(keys, []byte(key))
+		values = append(values, value)
+
+		// Check if client closed the stream by testing context cancellation
+		select {
+		case <-stream.Context().Done():
+			// Client closed the stream, stop processing immediately
+			return stream.Context().Err()
+		default:
+			// Continue processing
+		}
 	}
 
 	if cnt > 0 {
 		if err := stream.Send(&proxyv1.BatchGetResponse{
-			Values: batch,
-			TxnId:  txnID,
+			Keys:    keys,
+			Values:  values,
+			StartTs: txn.StartTS(),
 		}); err != nil {
+			logger.Debugf("failed to send batch get response: %v", err)
+			// Client closed the stream
 			return err
 		}
 	}
 
-	// Auto commit if requested
-	if req.AutoCommit {
-		if commitErr := p.commitTxn(stream.Context(), txnID); commitErr != nil {
-			p.logger.Errorf("Auto commit failed for transaction %s: %v", txnID, commitErr)
-		}
-	}
-
 	return nil
-}
-
-// Delete implements TxnProxyServiceServer.Delete
-func (p *TiKVProxy) Delete(ctx context.Context, req *proxyv1.DeleteRequest) (*proxyv1.DeleteResponse, error) {
-	// TODO: implement delete logic
-	txn, txnID, err := p.getOrCreateTransaction(req.TxnId)
-	if err != nil {
-		return &proxyv1.DeleteResponse{
-			TxnId:        req.TxnId,
-		}, status.Errorf(codes.Internal, err.Error())
-	}
-	err = txn.tikv.Delete(req.Key)
-	if err != nil {
-		return &proxyv1.DeleteResponse{
-			TxnId:        req.TxnId,
-		}, status.Errorf(codes.Internal, err.Error())
-	}
-
-	if req.AutoCommit {
-		if commitErr := p.commitTxn(ctx, txnID); commitErr != nil {
-			return &proxyv1.DeleteResponse{
-				TxnId:        req.TxnId,
-			}, status.Errorf(codes.Internal, commitErr.Error())
-		}
-	}
-	return &proxyv1.DeleteResponse{
-		TxnId:        req.TxnId,
-	}, nil
 }
 
 // Scan implements TxnProxyServiceServer.Scan
 func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyService_ScanServer) error {
-	txn, txnID, err := p.getOrCreateTransaction(req.TxnId)
-	if err != nil {
-		return err
+	startTS := req.StartTs
+
+	var txn *tikv.KVTxn
+	var err error
+	if startTS != 0 {
+		txn, err = p.client.Begin(tikv.WithStartTS(startTS))
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
+		}
+		if startTS == math.MaxUint64 {
+			txn.GetSnapshot().SetIsolationLevel(txnkv.RC) // RC isolation to skip lock checking in TiKV
+		}
+	} else {
+		txn, err = p.client.Begin()
 	}
-	iter, err := txn.tikv.Iter(req.StartKey, req.EndKey)
+	if err != nil {
+		return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
+	}
+
+	iter, err := txn.Iter(req.StartKey, req.EndKey)
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to create iterator: %v", err)
 	}
@@ -224,7 +248,8 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 
 	scanSize := int(req.ScanSize)
 	scanCnt := 0
-	response := make(map[string][]byte)
+	keys := make([][]byte, 0)
+	values := make([][]byte, 0)
 
 	if scanSize == 0 && iter.Valid() {
 		return nil // just for check the iterator is valid
@@ -233,233 +258,132 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 	for iter.Valid() && scanCnt < scanSize {
 		key := iter.Key()
 		value := iter.Value()
-		response[string(key)] = value
+		keys = append(keys, key)
+		values = append(values, value)
 		scanCnt++
-		if len(response) >= scanSize {
+		if len(keys) >= scanSize {
 			if err := stream.Send(&proxyv1.ScanResponse{
-				Values: response,
-				TxnId:  txnID,
+				Keys:    keys,
+				Values:  values,
+				StartTs: txn.StartTS(),
 			}); err != nil {
+				// Client closed the stream, stop scanning immediately
 				return err
 			}
-			response = make(map[string][]byte)
+			keys = make([][]byte, 0)
+			values = make([][]byte, 0)
 			scanCnt = 0
 		}
+
+		// Check if client closed the stream by testing context cancellation
+		select {
+		case <-stream.Context().Done():
+			// Client closed the stream, stop scanning immediately
+			return stream.Context().Err()
+		default:
+			// Continue scanning
+		}
+
 		iter.Next()
 	}
 	if scanCnt > 0 {
 		if err := stream.Send(&proxyv1.ScanResponse{
-			Values: response,
-			TxnId:  txnID,
+			Keys:    keys,
+			Values:  values,
+			StartTs: txn.StartTS(),
 		}); err != nil {
-			return status.Errorf(codes.Internal, err.Error())
-		}
-	}
-
-	return nil
-}
-
-func (p *TiKVProxy) ScanSnap(req *proxyv1.ScanSnapRequest, stream proxyv1.TxnProxyService_ScanSnapServer) error {
-	//TODO: implement scan snapshot
-	ts, err := p.client.CurrentTimestamp("global")
-	if err != nil {
-		return err
-	}
-	snap := p.client.GetSnapshot(ts)
-	snap.SetScanBatchSize(10240)
-	snap.SetNotFillCache(true)
-	snap.SetPriority(txnutil.PriorityLow)
-
-	iter, err := snap.Iter(req.StartKey, req.EndKey)
-	if err != nil {
-		return status.Errorf(codes.Internal, "failed to create iterator: %v", err)
-	}
-	defer iter.Close()
-
-	scanSize := int(req.ScanSize)
-	if scanSize == -1{
-		scanSize = int(math.MaxInt32)
-	}
-	scanCnt := 0
-	response := make(map[string][]byte)
-
-	if scanSize == 0 && iter.Valid() {
-		return nil // just for check the iterator is valid
-	}
-	
-	for iter.Valid() && scanCnt < scanSize {
-		key := iter.Key()
-		value := iter.Value()
-		response[string(key)] = value
-		scanCnt++
-		if len(response) >= scanSize {
-			if err := stream.Send(&proxyv1.ScanSnapResponse{
-				Values: response,
-			}); err != nil {
-				return err
-			}
-			response = make(map[string][]byte)
-			scanCnt = 0
-		}
-		iter.Next()
-	}
-	if scanCnt > 0 {
-		if err := stream.Send(&proxyv1.ScanSnapResponse{
-			Values: response,
-		}); err != nil {
+			// Client closed the stream
 			return err
 		}
-	}	
+	}
+
 	return nil
 }
 
 // Commit implements TxnProxyServiceServer.Commit
-func (p *TiKVProxy) Commit(ctx context.Context, req *proxyv1.CommitRequest) (*proxyv1.CommitResponse, error) {
-	txn, txnID, err := p.getOrCreateTransaction(req.TxnId)
+func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
+	logger.Debugf("received commit request")
+	allKeys := make([][]byte, 0)
+	allValues := make([][]byte, 0)
+	var startTS uint64
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed to receive from stream: %v", err)
+		}
+
+		// In a stateless proxy, the start_ts from the client is mainly for consistency checks on the client-side.
+		// The proxy will start a new transaction for the commit.
+		// We can still capture it for logging or potential future use.
+		if startTS == 0 {
+			startTS = req.GetStartTs()
+		}
+
+		for i, k := range req.Keys {
+			logger.Debugf("commit key: %s, value: %s", k, req.Values[i])
+			allKeys = append(allKeys, k)
+			if req.Values[i] == nil {
+				allValues = append(allValues, []byte{})
+			} else {
+				allValues = append(allValues, req.Values[i])
+			}
+		}
+	}
+
+	if len(allValues) == 0 {
+		// TiKV disallows empty transactions, but we can treat this as a successful no-op.
+		// A read-only transaction might not have a valid commit_ts, so we can't create one.
+		// However, the client expects a response.
+		// A better approach might be to define what an empty commit means.
+		// For now, we return an empty response, but the client needs to handle it.
+		// A real commit_ts is needed, so we must perform a transaction.
+		// Let's create a transaction and commit it to get a valid commitTS.
+		logger.Warnf("committing an empty transaction for start_ts: %d", startTS)
+	}
+
+	var txn *tikv.KVTxn
+	var err error
+	if startTS != 0 {
+		txn, err = p.client.Begin(tikv.WithStartTS(startTS))
+	} else {
+		txn, err = p.client.Begin()
+	}
 	if err != nil {
-		return &proxyv1.CommitResponse{
-		}, status.Errorf(codes.Internal, err.Error())
+		return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
 	}
 
-	for key, value := range req.Values {
-		txn.tikv.Set([]byte(key), value)
+	for i, k := range allKeys {
+		if err := txn.Set(k, allValues[i]); err != nil {
+			// Best effort to rollback
+			_ = txn.Rollback()
+			return status.Errorf(codes.Internal, "failed to set key %s: %v", k, err)
+		}
 	}
 
-	if err := p.commitTxn(ctx, txnID); err != nil {
-		return &proxyv1.CommitResponse{
-		}, status.Errorf(codes.Internal, err.Error())
+	// Use a separate context for commit to ensure it completes even if client disconnects
+	// We use background context with a reasonable timeout to prevent hanging indefinitely
+	commitCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	if err := txn.Commit(commitCtx); err != nil {
+		logger.Errorf("failed to commit transaction for start_ts %d: %v", startTS, err)
+		return status.Errorf(codes.Internal, "failed to commit transaction for start_ts %d: %v", startTS, err)
 	}
 
-	return &proxyv1.CommitResponse{
-	}, nil
+	return stream.SendAndClose(&proxyv1.CommitResponse{
+		CommitTs: txn.StartTS(), // Note: Using StartTS as a placeholder for CommitTS
+	})
 }
 
 // Rollback implements TxnProxyServiceServer.Rollback
 func (p *TiKVProxy) Rollback(ctx context.Context, req *proxyv1.RollbackRequest) (*proxyv1.RollbackResponse, error) {
-	// TODO: implement rollback logic
-	return &proxyv1.RollbackResponse{
-	}, nil
-}
-
-// beginTxnInternal creates a new transaction and returns its UUID
-func (p *TiKVProxy) beginTxnInternal(proposalUUID string) (string, error) {
-	tikvTxn, err := p.client.KVStore.Begin()
-	if err != nil {
-		return "", status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
-	}
-
-	var txnID string
-	if proposalUUID != "" {
-		txnID = proposalUUID
-	} else {
-		txnID = uuid.New().String()
-	}
-
-	txn := &Transaction{
-		tikv:    tikvTxn,
-		startTS: tikvTxn.StartTS(),
-		created: time.Now(),
-	}
-
-	p.transactions.Store(txnID, txn)
-	p.logger.Debugf("Created transaction %s", txnID)
-
-	return txnID, nil
-}
-
-// getTransaction retrieves a transaction by ID
-func (p *TiKVProxy) getTransaction(txnID string) (*Transaction, error) {
-	if txnID == "" {
-		return nil, status.Error(codes.InvalidArgument, "transaction ID is required")
-	}
-
-	value, ok := p.transactions.Load(txnID)
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "transaction %s not found", txnID)
-	}
-
-	return value.(*Transaction), nil
-}
-
-// getOrCreateTransaction creates a new transaction if txnID is empty, otherwise retrieves an existing transaction
-func (p *TiKVProxy) getOrCreateTransaction(txnID string) (*Transaction, string, error) {
-	if txnID  == "read-only" {
-		txn, err := p.client.Begin(tikv.WithStartTS(math.MaxUint64))
-		if err != nil {
-			return nil, "", status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
-		}
-		return &Transaction{
-			tikv:    txn,
-		}, txnID, nil
-	}
-	if txnID == "" {
-		var err error
-		txnID, err = p.beginTxnInternal("")
-		if err != nil {
-			return nil, "", err
-		}
-	}
-
-	txn, err := p.getTransaction(txnID)
-	if err != nil {
-		return nil, "", err
-	}
-	return txn, txnID, nil
-}
-
-// commitTxn commits a transaction and cleans up
-func (p *TiKVProxy) commitTxn(ctx context.Context, txnID string) error {
-	if txnID == "read-only" {
-		return nil
-	}
-	txn, err := p.getTransaction(txnID)
-	if err != nil {
-		return err
-	}
-
-	if !txn.tikv.IsReadOnly() {
-		txn.tikv.SetEnable1PC(true)
-		txn.tikv.SetEnableAsyncCommit(true)
-		err = txn.tikv.Commit(ctx)
-	}
-
-	txn.commitTS = txn.tikv.StartTS() //TODO: use the commitTS not startTS
-	p.cleanupTxn(txnID)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// cleanupTxn cleans up a transaction
-func (p *TiKVProxy) cleanupTxn(txnID string) {
-	if _, ok := p.transactions.Load(txnID); ok {
-		p.logger.Debugf("Cleaned up transaction %s", txnID)
-		p.transactions.Delete(txnID)
-	}
-}
-
-// rollbackInternal rolls back a transaction
-func (p *TiKVProxy) rollbackInternal(ctx context.Context, txnID string) error {
-	// TODO: implement rollback transaction
-	return nil
-}
-
-// cleanupExpiredTransactions periodically cleans up expired transactions
-func (p *TiKVProxy) cleanupExpiredTransactions() {
-	for {
-		select {
-		case <-p.cleanupTick.C:
-			p.transactions.Range(func(key, value interface{}) bool {
-				txn := value.(*Transaction)
-				if time.Now().After(txn.created.Add(5 * time.Minute)) {
-					// we not allow the transaction start more than 5 minutes
-					p.cleanupTxn(key.(string))
-				}
-				return true
-			})
-		case <-p.stopCh:
-			return
-		}
-	}
+	// In a stateless proxy model, the proxy does not hold transaction state.
+	// The client manages the transaction lifecycle. If the client decides to rollback,
+	// it simply doesn't call commit. This Rollback RPC call is effectively a no-op
+	// on the proxy side, but serves to complete the client's transactional workflow.
+	logger.Infof("received rollback for transaction %d", req.StartTs)
+	return &proxyv1.RollbackResponse{}, nil
 }

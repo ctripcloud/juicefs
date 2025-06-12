@@ -71,6 +71,7 @@ func Main(args []string) error {
 			cmdUmount(),
 			cmdGateway(),
 			cmdWebDav(),
+			cmdTiKVProxy(),
 			cmdBench(),
 			cmdObjbench(),
 			cmdMdtest(),

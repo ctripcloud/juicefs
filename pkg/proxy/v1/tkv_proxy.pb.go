@@ -23,8 +23,11 @@ const (
 
 // Begin Transaction
 type BeginTxnRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ProposalUuid  string                 `protobuf:"bytes,1,opt,name=proposal_uuid,json=proposalUuid,proto3" json:"proposal_uuid,omitempty"` // Optional: proposed transaction ID
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// default is read-only, so start_ts will be set to 0
+	// if start_ts is not 0, the transaction will be writeable,
+	// start_ts will be provided by tikv PD
+	StartTs       uint64 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -59,16 +62,17 @@ func (*BeginTxnRequest) Descriptor() ([]byte, []int) {
 	return file_tkv_proxy_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *BeginTxnRequest) GetProposalUuid() string {
+func (x *BeginTxnRequest) GetStartTs() uint64 {
 	if x != nil {
-		return x.ProposalUuid
+		return x.StartTs
 	}
-	return ""
+	return 0
 }
 
 type BeginTxnResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// return the start_ts of the transaction
+	StartTs       uint64 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -103,19 +107,18 @@ func (*BeginTxnResponse) Descriptor() ([]byte, []int) {
 	return file_tkv_proxy_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *BeginTxnResponse) GetTxnId() string {
+func (x *BeginTxnResponse) GetStartTs() uint64 {
 	if x != nil {
-		return x.TxnId
+		return x.StartTs
 	}
-	return ""
+	return 0
 }
 
 // Get single key
 type GetRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"` // Optional: if empty, creates new transaction
+	StartTs       uint64                 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
 	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	AutoCommit    bool                   `protobuf:"varint,3,opt,name=auto_commit,json=autoCommit,proto3" json:"auto_commit,omitempty"` // Auto commit after operation
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -150,11 +153,11 @@ func (*GetRequest) Descriptor() ([]byte, []int) {
 	return file_tkv_proxy_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *GetRequest) GetTxnId() string {
+func (x *GetRequest) GetStartTs() uint64 {
 	if x != nil {
-		return x.TxnId
+		return x.StartTs
 	}
-	return ""
+	return 0
 }
 
 func (x *GetRequest) GetKey() []byte {
@@ -164,17 +167,10 @@ func (x *GetRequest) GetKey() []byte {
 	return nil
 }
 
-func (x *GetRequest) GetAutoCommit() bool {
-	if x != nil {
-		return x.AutoCommit
-	}
-	return false
-}
-
 type GetResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Value         []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
-	TxnId         string                 `protobuf:"bytes,2,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"` // Transaction ID used/created
+	StartTs       uint64                 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -209,225 +205,14 @@ func (*GetResponse) Descriptor() ([]byte, []int) {
 	return file_tkv_proxy_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *GetResponse) GetValue() []byte {
+func (x *GetResponse) GetStartTs() uint64 {
 	if x != nil {
-		return x.Value
-	}
-	return nil
-}
-
-func (x *GetResponse) GetTxnId() string {
-	if x != nil {
-		return x.TxnId
-	}
-	return ""
-}
-
-// Set key-value
-type SetRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"` // Optional: if empty, creates new transaction
-	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	Value         []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
-	AutoCommit    bool                   `protobuf:"varint,4,opt,name=auto_commit,json=autoCommit,proto3" json:"auto_commit,omitempty"` // Auto commit after operation
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SetRequest) Reset() {
-	*x = SetRequest{}
-	mi := &file_tkv_proxy_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SetRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SetRequest) ProtoMessage() {}
-
-func (x *SetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SetRequest.ProtoReflect.Descriptor instead.
-func (*SetRequest) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *SetRequest) GetTxnId() string {
-	if x != nil {
-		return x.TxnId
-	}
-	return ""
-}
-
-func (x *SetRequest) GetKey() []byte {
-	if x != nil {
-		return x.Key
-	}
-	return nil
-}
-
-func (x *SetRequest) GetValue() []byte {
-	if x != nil {
-		return x.Value
-	}
-	return nil
-}
-
-func (x *SetRequest) GetAutoCommit() bool {
-	if x != nil {
-		return x.AutoCommit
-	}
-	return false
-}
-
-type SetResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"` // Transaction ID used/created
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SetResponse) Reset() {
-	*x = SetResponse{}
-	mi := &file_tkv_proxy_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SetResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SetResponse) ProtoMessage() {}
-
-func (x *SetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SetResponse.ProtoReflect.Descriptor instead.
-func (*SetResponse) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *SetResponse) GetTxnId() string {
-	if x != nil {
-		return x.TxnId
-	}
-	return ""
-}
-
-// Get a key with snapshot
-type SnapGetRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	SnapTs        uint64                 `protobuf:"varint,2,opt,name=snap_ts,json=snapTs,proto3" json:"snap_ts,omitempty"` // Snapshot timestamp
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SnapGetRequest) Reset() {
-	*x = SnapGetRequest{}
-	mi := &file_tkv_proxy_proto_msgTypes[6]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SnapGetRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SnapGetRequest) ProtoMessage() {}
-
-func (x *SnapGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[6]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SnapGetRequest.ProtoReflect.Descriptor instead.
-func (*SnapGetRequest) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{6}
-}
-
-func (x *SnapGetRequest) GetKey() []byte {
-	if x != nil {
-		return x.Key
-	}
-	return nil
-}
-
-func (x *SnapGetRequest) GetSnapTs() uint64 {
-	if x != nil {
-		return x.SnapTs
+		return x.StartTs
 	}
 	return 0
 }
 
-type SnapGetResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// snapGet will not track the transaction, so the txn_id is not needed
-	Value         []byte `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SnapGetResponse) Reset() {
-	*x = SnapGetResponse{}
-	mi := &file_tkv_proxy_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SnapGetResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SnapGetResponse) ProtoMessage() {}
-
-func (x *SnapGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SnapGetResponse.ProtoReflect.Descriptor instead.
-func (*SnapGetResponse) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *SnapGetResponse) GetValue() []byte {
+func (x *GetResponse) GetValue() []byte {
 	if x != nil {
 		return x.Value
 	}
@@ -437,16 +222,15 @@ func (x *SnapGetResponse) GetValue() []byte {
 // BatchGet multiple keys (streaming response)
 type BatchGetRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"` // Optional: if empty, creates new transaction
+	StartTs       uint64                 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
 	Keys          [][]byte               `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
-	AutoCommit    bool                   `protobuf:"varint,3,opt,name=auto_commit,json=autoCommit,proto3" json:"auto_commit,omitempty"` // Auto commit after operation
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BatchGetRequest) Reset() {
 	*x = BatchGetRequest{}
-	mi := &file_tkv_proxy_proto_msgTypes[8]
+	mi := &file_tkv_proxy_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -458,7 +242,7 @@ func (x *BatchGetRequest) String() string {
 func (*BatchGetRequest) ProtoMessage() {}
 
 func (x *BatchGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[8]
+	mi := &file_tkv_proxy_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -471,14 +255,14 @@ func (x *BatchGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchGetRequest.ProtoReflect.Descriptor instead.
 func (*BatchGetRequest) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{8}
+	return file_tkv_proxy_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *BatchGetRequest) GetTxnId() string {
+func (x *BatchGetRequest) GetStartTs() uint64 {
 	if x != nil {
-		return x.TxnId
+		return x.StartTs
 	}
-	return ""
+	return 0
 }
 
 func (x *BatchGetRequest) GetKeys() [][]byte {
@@ -488,24 +272,18 @@ func (x *BatchGetRequest) GetKeys() [][]byte {
 	return nil
 }
 
-func (x *BatchGetRequest) GetAutoCommit() bool {
-	if x != nil {
-		return x.AutoCommit
-	}
-	return false
-}
-
 type BatchGetResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Values        map[string][]byte      `protobuf:"bytes,1,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	TxnId         string                 `protobuf:"bytes,2,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"` // Transaction ID used/created
+	StartTs       uint64                 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
+	Keys          [][]byte               `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
+	Values        [][]byte               `protobuf:"bytes,3,rep,name=values,proto3" json:"values,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BatchGetResponse) Reset() {
 	*x = BatchGetResponse{}
-	mi := &file_tkv_proxy_proto_msgTypes[9]
+	mi := &file_tkv_proxy_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -517,7 +295,7 @@ func (x *BatchGetResponse) String() string {
 func (*BatchGetResponse) ProtoMessage() {}
 
 func (x *BatchGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[9]
+	mi := &file_tkv_proxy_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -530,143 +308,44 @@ func (x *BatchGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchGetResponse.ProtoReflect.Descriptor instead.
 func (*BatchGetResponse) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{9}
+	return file_tkv_proxy_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *BatchGetResponse) GetValues() map[string][]byte {
+func (x *BatchGetResponse) GetStartTs() uint64 {
+	if x != nil {
+		return x.StartTs
+	}
+	return 0
+}
+
+func (x *BatchGetResponse) GetKeys() [][]byte {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+func (x *BatchGetResponse) GetValues() [][]byte {
 	if x != nil {
 		return x.Values
 	}
 	return nil
 }
 
-func (x *BatchGetResponse) GetTxnId() string {
-	if x != nil {
-		return x.TxnId
-	}
-	return ""
-}
-
-// Delete key
-type DeleteRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"` // Optional: if empty, creates new transaction
-	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	AutoCommit    bool                   `protobuf:"varint,3,opt,name=auto_commit,json=autoCommit,proto3" json:"auto_commit,omitempty"` // Auto commit after operation
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DeleteRequest) Reset() {
-	*x = DeleteRequest{}
-	mi := &file_tkv_proxy_proto_msgTypes[10]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DeleteRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DeleteRequest) ProtoMessage() {}
-
-func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[10]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DeleteRequest.ProtoReflect.Descriptor instead.
-func (*DeleteRequest) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{10}
-}
-
-func (x *DeleteRequest) GetTxnId() string {
-	if x != nil {
-		return x.TxnId
-	}
-	return ""
-}
-
-func (x *DeleteRequest) GetKey() []byte {
-	if x != nil {
-		return x.Key
-	}
-	return nil
-}
-
-func (x *DeleteRequest) GetAutoCommit() bool {
-	if x != nil {
-		return x.AutoCommit
-	}
-	return false
-}
-
-type DeleteResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"` // Transaction ID used/created
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DeleteResponse) Reset() {
-	*x = DeleteResponse{}
-	mi := &file_tkv_proxy_proto_msgTypes[11]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DeleteResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DeleteResponse) ProtoMessage() {}
-
-func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[11]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DeleteResponse.ProtoReflect.Descriptor instead.
-func (*DeleteResponse) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{11}
-}
-
-func (x *DeleteResponse) GetTxnId() string {
-	if x != nil {
-		return x.TxnId
-	}
-	return ""
-}
-
 // Scan keys (streaming response)
 type ScanRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"`                 // Optional: if empty, creates new transaction
-	StartKey      []byte                 `protobuf:"bytes,2,opt,name=start_key,json=startKey,proto3" json:"start_key,omitempty"`        // Start key for scan
-	EndKey        []byte                 `protobuf:"bytes,3,opt,name=end_key,json=endKey,proto3" json:"end_key,omitempty"`              // End key for scan (exclusive)
-	ScanSize      int32                  `protobuf:"varint,4,opt,name=scan_size,json=scanSize,proto3" json:"scan_size,omitempty"`       // Number of items to scan per stream response (default: 100)
-	AutoCommit    bool                   `protobuf:"varint,5,opt,name=auto_commit,json=autoCommit,proto3" json:"auto_commit,omitempty"` // Auto commit after operation
+	StartTs       uint64                 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
+	StartKey      []byte                 `protobuf:"bytes,2,opt,name=start_key,json=startKey,proto3" json:"start_key,omitempty"`  // Start key for scan
+	EndKey        []byte                 `protobuf:"bytes,3,opt,name=end_key,json=endKey,proto3" json:"end_key,omitempty"`        // End key for scan (exclusive)
+	ScanSize      int32                  `protobuf:"varint,4,opt,name=scan_size,json=scanSize,proto3" json:"scan_size,omitempty"` // Number of items to scan per stream response (default: 100)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ScanRequest) Reset() {
 	*x = ScanRequest{}
-	mi := &file_tkv_proxy_proto_msgTypes[12]
+	mi := &file_tkv_proxy_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -678,7 +357,7 @@ func (x *ScanRequest) String() string {
 func (*ScanRequest) ProtoMessage() {}
 
 func (x *ScanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[12]
+	mi := &file_tkv_proxy_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -691,14 +370,14 @@ func (x *ScanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanRequest.ProtoReflect.Descriptor instead.
 func (*ScanRequest) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{12}
+	return file_tkv_proxy_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *ScanRequest) GetTxnId() string {
+func (x *ScanRequest) GetStartTs() uint64 {
 	if x != nil {
-		return x.TxnId
+		return x.StartTs
 	}
-	return ""
+	return 0
 }
 
 func (x *ScanRequest) GetStartKey() []byte {
@@ -722,24 +401,18 @@ func (x *ScanRequest) GetScanSize() int32 {
 	return 0
 }
 
-func (x *ScanRequest) GetAutoCommit() bool {
-	if x != nil {
-		return x.AutoCommit
-	}
-	return false
-}
-
 type ScanResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Values        map[string][]byte      `protobuf:"bytes,1,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	TxnId         string                 `protobuf:"bytes,2,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"` // Transaction ID used/created
+	StartTs       uint64                 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
+	Keys          [][]byte               `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
+	Values        [][]byte               `protobuf:"bytes,3,rep,name=values,proto3" json:"values,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ScanResponse) Reset() {
 	*x = ScanResponse{}
-	mi := &file_tkv_proxy_proto_msgTypes[13]
+	mi := &file_tkv_proxy_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -751,7 +424,7 @@ func (x *ScanResponse) String() string {
 func (*ScanResponse) ProtoMessage() {}
 
 func (x *ScanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[13]
+	mi := &file_tkv_proxy_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -764,130 +437,24 @@ func (x *ScanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanResponse.ProtoReflect.Descriptor instead.
 func (*ScanResponse) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{13}
+	return file_tkv_proxy_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *ScanResponse) GetValues() map[string][]byte {
+func (x *ScanResponse) GetStartTs() uint64 {
 	if x != nil {
-		return x.Values
-	}
-	return nil
-}
-
-func (x *ScanResponse) GetTxnId() string {
-	if x != nil {
-		return x.TxnId
-	}
-	return ""
-}
-
-// Scan snapshot
-type ScanSnapRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	StartKey      []byte                 `protobuf:"bytes,1,opt,name=start_key,json=startKey,proto3" json:"start_key,omitempty"`  // Start key for scan
-	EndKey        []byte                 `protobuf:"bytes,2,opt,name=end_key,json=endKey,proto3" json:"end_key,omitempty"`        // End key for scan (exclusive)
-	SnapTs        uint64                 `protobuf:"varint,3,opt,name=snap_ts,json=snapTs,proto3" json:"snap_ts,omitempty"`       // Snapshot timestamp
-	ScanSize      int32                  `protobuf:"varint,4,opt,name=scan_size,json=scanSize,proto3" json:"scan_size,omitempty"` // Number of items to scan per stream response (default: 100)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ScanSnapRequest) Reset() {
-	*x = ScanSnapRequest{}
-	mi := &file_tkv_proxy_proto_msgTypes[14]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ScanSnapRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ScanSnapRequest) ProtoMessage() {}
-
-func (x *ScanSnapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[14]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ScanSnapRequest.ProtoReflect.Descriptor instead.
-func (*ScanSnapRequest) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{14}
-}
-
-func (x *ScanSnapRequest) GetStartKey() []byte {
-	if x != nil {
-		return x.StartKey
-	}
-	return nil
-}
-
-func (x *ScanSnapRequest) GetEndKey() []byte {
-	if x != nil {
-		return x.EndKey
-	}
-	return nil
-}
-
-func (x *ScanSnapRequest) GetSnapTs() uint64 {
-	if x != nil {
-		return x.SnapTs
+		return x.StartTs
 	}
 	return 0
 }
 
-func (x *ScanSnapRequest) GetScanSize() int32 {
+func (x *ScanResponse) GetKeys() [][]byte {
 	if x != nil {
-		return x.ScanSize
+		return x.Keys
 	}
-	return 0
+	return nil
 }
 
-type ScanSnapResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Values        map[string][]byte      `protobuf:"bytes,1,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ScanSnapResponse) Reset() {
-	*x = ScanSnapResponse{}
-	mi := &file_tkv_proxy_proto_msgTypes[15]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ScanSnapResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ScanSnapResponse) ProtoMessage() {}
-
-func (x *ScanSnapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[15]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ScanSnapResponse.ProtoReflect.Descriptor instead.
-func (*ScanSnapResponse) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{15}
-}
-
-func (x *ScanSnapResponse) GetValues() map[string][]byte {
+func (x *ScanResponse) GetValues() [][]byte {
 	if x != nil {
 		return x.Values
 	}
@@ -897,15 +464,16 @@ func (x *ScanSnapResponse) GetValues() map[string][]byte {
 // Commit transaction
 type CommitRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"`                                                                // transaction ID
-	Values        map[string][]byte      `protobuf:"bytes,2,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // key-value pairs to commit
+	StartTs       uint64                 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
+	Keys          [][]byte               `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
+	Values        [][]byte               `protobuf:"bytes,3,rep,name=values,proto3" json:"values,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CommitRequest) Reset() {
 	*x = CommitRequest{}
-	mi := &file_tkv_proxy_proto_msgTypes[16]
+	mi := &file_tkv_proxy_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -917,7 +485,7 @@ func (x *CommitRequest) String() string {
 func (*CommitRequest) ProtoMessage() {}
 
 func (x *CommitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[16]
+	mi := &file_tkv_proxy_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -930,17 +498,24 @@ func (x *CommitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitRequest.ProtoReflect.Descriptor instead.
 func (*CommitRequest) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{16}
+	return file_tkv_proxy_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *CommitRequest) GetTxnId() string {
+func (x *CommitRequest) GetStartTs() uint64 {
 	if x != nil {
-		return x.TxnId
+		return x.StartTs
 	}
-	return ""
+	return 0
 }
 
-func (x *CommitRequest) GetValues() map[string][]byte {
+func (x *CommitRequest) GetKeys() [][]byte {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+func (x *CommitRequest) GetValues() [][]byte {
 	if x != nil {
 		return x.Values
 	}
@@ -949,14 +524,14 @@ func (x *CommitRequest) GetValues() map[string][]byte {
 
 type CommitResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"`
+	CommitTs      uint64                 `protobuf:"varint,1,opt,name=commit_ts,json=commitTs,proto3" json:"commit_ts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CommitResponse) Reset() {
 	*x = CommitResponse{}
-	mi := &file_tkv_proxy_proto_msgTypes[17]
+	mi := &file_tkv_proxy_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -968,7 +543,7 @@ func (x *CommitResponse) String() string {
 func (*CommitResponse) ProtoMessage() {}
 
 func (x *CommitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[17]
+	mi := &file_tkv_proxy_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -981,27 +556,27 @@ func (x *CommitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitResponse.ProtoReflect.Descriptor instead.
 func (*CommitResponse) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{17}
+	return file_tkv_proxy_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *CommitResponse) GetTxnId() string {
+func (x *CommitResponse) GetCommitTs() uint64 {
 	if x != nil {
-		return x.TxnId
+		return x.CommitTs
 	}
-	return ""
+	return 0
 }
 
 // Rollback transaction
 type RollbackRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"`
+	StartTs       uint64                 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RollbackRequest) Reset() {
 	*x = RollbackRequest{}
-	mi := &file_tkv_proxy_proto_msgTypes[18]
+	mi := &file_tkv_proxy_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1013,7 +588,7 @@ func (x *RollbackRequest) String() string {
 func (*RollbackRequest) ProtoMessage() {}
 
 func (x *RollbackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[18]
+	mi := &file_tkv_proxy_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1026,26 +601,26 @@ func (x *RollbackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackRequest.ProtoReflect.Descriptor instead.
 func (*RollbackRequest) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{18}
+	return file_tkv_proxy_proto_rawDescGZIP(), []int{10}
 }
 
-func (x *RollbackRequest) GetTxnId() string {
+func (x *RollbackRequest) GetStartTs() uint64 {
 	if x != nil {
-		return x.TxnId
+		return x.StartTs
 	}
-	return ""
+	return 0
 }
 
 type RollbackResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TxnId         string                 `protobuf:"bytes,1,opt,name=txn_id,json=txnId,proto3" json:"txn_id,omitempty"`
+	StartTs       uint64                 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RollbackResponse) Reset() {
 	*x = RollbackResponse{}
-	mi := &file_tkv_proxy_proto_msgTypes[19]
+	mi := &file_tkv_proxy_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1057,7 +632,7 @@ func (x *RollbackResponse) String() string {
 func (*RollbackResponse) ProtoMessage() {}
 
 func (x *RollbackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tkv_proxy_proto_msgTypes[19]
+	mi := &file_tkv_proxy_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1070,111 +645,64 @@ func (x *RollbackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackResponse.ProtoReflect.Descriptor instead.
 func (*RollbackResponse) Descriptor() ([]byte, []int) {
-	return file_tkv_proxy_proto_rawDescGZIP(), []int{19}
+	return file_tkv_proxy_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *RollbackResponse) GetTxnId() string {
+func (x *RollbackResponse) GetStartTs() uint64 {
 	if x != nil {
-		return x.TxnId
+		return x.StartTs
 	}
-	return ""
+	return 0
 }
 
 var File_tkv_proxy_proto protoreflect.FileDescriptor
 
 const file_tkv_proxy_proto_rawDesc = "" +
 	"\n" +
-	"\x0ftkv_proxy.proto\x12\x10juicefs.proxy.v1\"6\n" +
-	"\x0fBeginTxnRequest\x12#\n" +
-	"\rproposal_uuid\x18\x01 \x01(\tR\fproposalUuid\")\n" +
-	"\x10BeginTxnResponse\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\"V\n" +
+	"\x0ftkv_proxy.proto\x12\x10juicefs.proxy.v1\",\n" +
+	"\x0fBeginTxnRequest\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\"-\n" +
+	"\x10BeginTxnResponse\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\"9\n" +
 	"\n" +
-	"GetRequest\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\fR\x03key\x12\x1f\n" +
-	"\vauto_commit\x18\x03 \x01(\bR\n" +
-	"autoCommit\":\n" +
-	"\vGetResponse\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\fR\x05value\x12\x15\n" +
-	"\x06txn_id\x18\x02 \x01(\tR\x05txnId\"l\n" +
-	"\n" +
-	"SetRequest\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\fR\x03key\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\fR\x05value\x12\x1f\n" +
-	"\vauto_commit\x18\x04 \x01(\bR\n" +
-	"autoCommit\"$\n" +
-	"\vSetResponse\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\";\n" +
-	"\x0eSnapGetRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\fR\x03key\x12\x17\n" +
-	"\asnap_ts\x18\x02 \x01(\x04R\x06snapTs\"'\n" +
-	"\x0fSnapGetResponse\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\fR\x05value\"]\n" +
-	"\x0fBatchGetRequest\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\x12\x12\n" +
-	"\x04keys\x18\x02 \x03(\fR\x04keys\x12\x1f\n" +
-	"\vauto_commit\x18\x03 \x01(\bR\n" +
-	"autoCommit\"\xac\x01\n" +
-	"\x10BatchGetResponse\x12F\n" +
-	"\x06values\x18\x01 \x03(\v2..juicefs.proxy.v1.BatchGetResponse.ValuesEntryR\x06values\x12\x15\n" +
-	"\x06txn_id\x18\x02 \x01(\tR\x05txnId\x1a9\n" +
-	"\vValuesEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"Y\n" +
-	"\rDeleteRequest\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\fR\x03key\x12\x1f\n" +
-	"\vauto_commit\x18\x03 \x01(\bR\n" +
-	"autoCommit\"'\n" +
-	"\x0eDeleteResponse\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\"\x98\x01\n" +
-	"\vScanRequest\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\x12\x1b\n" +
+	"GetRequest\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\fR\x03key\">\n" +
+	"\vGetResponse\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\"@\n" +
+	"\x0fBatchGetRequest\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\x12\x12\n" +
+	"\x04keys\x18\x02 \x03(\fR\x04keys\"Y\n" +
+	"\x10BatchGetResponse\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\x12\x12\n" +
+	"\x04keys\x18\x02 \x03(\fR\x04keys\x12\x16\n" +
+	"\x06values\x18\x03 \x03(\fR\x06values\"{\n" +
+	"\vScanRequest\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\x12\x1b\n" +
 	"\tstart_key\x18\x02 \x01(\fR\bstartKey\x12\x17\n" +
 	"\aend_key\x18\x03 \x01(\fR\x06endKey\x12\x1b\n" +
-	"\tscan_size\x18\x04 \x01(\x05R\bscanSize\x12\x1f\n" +
-	"\vauto_commit\x18\x05 \x01(\bR\n" +
-	"autoCommit\"\xa4\x01\n" +
-	"\fScanResponse\x12B\n" +
-	"\x06values\x18\x01 \x03(\v2*.juicefs.proxy.v1.ScanResponse.ValuesEntryR\x06values\x12\x15\n" +
-	"\x06txn_id\x18\x02 \x01(\tR\x05txnId\x1a9\n" +
-	"\vValuesEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"}\n" +
-	"\x0fScanSnapRequest\x12\x1b\n" +
-	"\tstart_key\x18\x01 \x01(\fR\bstartKey\x12\x17\n" +
-	"\aend_key\x18\x02 \x01(\fR\x06endKey\x12\x17\n" +
-	"\asnap_ts\x18\x03 \x01(\x04R\x06snapTs\x12\x1b\n" +
-	"\tscan_size\x18\x04 \x01(\x05R\bscanSize\"\x95\x01\n" +
-	"\x10ScanSnapResponse\x12F\n" +
-	"\x06values\x18\x01 \x03(\v2..juicefs.proxy.v1.ScanSnapResponse.ValuesEntryR\x06values\x1a9\n" +
-	"\vValuesEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\xa6\x01\n" +
-	"\rCommitRequest\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\x12C\n" +
-	"\x06values\x18\x02 \x03(\v2+.juicefs.proxy.v1.CommitRequest.ValuesEntryR\x06values\x1a9\n" +
-	"\vValuesEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"'\n" +
-	"\x0eCommitResponse\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\"(\n" +
-	"\x0fRollbackRequest\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId\")\n" +
-	"\x10RollbackResponse\x12\x15\n" +
-	"\x06txn_id\x18\x01 \x01(\tR\x05txnId2\x9c\x06\n" +
+	"\tscan_size\x18\x04 \x01(\x05R\bscanSize\"U\n" +
+	"\fScanResponse\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\x12\x12\n" +
+	"\x04keys\x18\x02 \x03(\fR\x04keys\x12\x16\n" +
+	"\x06values\x18\x03 \x03(\fR\x06values\"V\n" +
+	"\rCommitRequest\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\x12\x12\n" +
+	"\x04keys\x18\x02 \x03(\fR\x04keys\x12\x16\n" +
+	"\x06values\x18\x03 \x03(\fR\x06values\"-\n" +
+	"\x0eCommitResponse\x12\x1b\n" +
+	"\tcommit_ts\x18\x01 \x01(\x04R\bcommitTs\",\n" +
+	"\x0fRollbackRequest\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\"-\n" +
+	"\x10RollbackResponse\x12\x19\n" +
+	"\bstart_ts\x18\x01 \x01(\x04R\astartTs2\xe8\x03\n" +
 	"\x0fTxnProxyService\x12Q\n" +
 	"\bBeginTxn\x12!.juicefs.proxy.v1.BeginTxnRequest\x1a\".juicefs.proxy.v1.BeginTxnResponse\x12B\n" +
-	"\x03Get\x12\x1c.juicefs.proxy.v1.GetRequest\x1a\x1d.juicefs.proxy.v1.GetResponse\x12B\n" +
-	"\x03Set\x12\x1c.juicefs.proxy.v1.SetRequest\x1a\x1d.juicefs.proxy.v1.SetResponse\x12N\n" +
-	"\aSnapGet\x12 .juicefs.proxy.v1.SnapGetRequest\x1a!.juicefs.proxy.v1.SnapGetResponse\x12S\n" +
-	"\bBatchGet\x12!.juicefs.proxy.v1.BatchGetRequest\x1a\".juicefs.proxy.v1.BatchGetResponse0\x01\x12K\n" +
-	"\x06Delete\x12\x1f.juicefs.proxy.v1.DeleteRequest\x1a .juicefs.proxy.v1.DeleteResponse\x12G\n" +
-	"\x04Scan\x12\x1d.juicefs.proxy.v1.ScanRequest\x1a\x1e.juicefs.proxy.v1.ScanResponse0\x01\x12S\n" +
-	"\bScanSnap\x12!.juicefs.proxy.v1.ScanSnapRequest\x1a\".juicefs.proxy.v1.ScanSnapResponse0\x01\x12K\n" +
-	"\x06Commit\x12\x1f.juicefs.proxy.v1.CommitRequest\x1a .juicefs.proxy.v1.CommitResponse\x12Q\n" +
+	"\x03Get\x12\x1c.juicefs.proxy.v1.GetRequest\x1a\x1d.juicefs.proxy.v1.GetResponse\x12S\n" +
+	"\bBatchGet\x12!.juicefs.proxy.v1.BatchGetRequest\x1a\".juicefs.proxy.v1.BatchGetResponse0\x01\x12G\n" +
+	"\x04Scan\x12\x1d.juicefs.proxy.v1.ScanRequest\x1a\x1e.juicefs.proxy.v1.ScanResponse0\x01\x12M\n" +
+	"\x06Commit\x12\x1f.juicefs.proxy.v1.CommitRequest\x1a .juicefs.proxy.v1.CommitResponse(\x01\x12Q\n" +
 	"\bRollback\x12!.juicefs.proxy.v1.RollbackRequest\x1a\".juicefs.proxy.v1.RollbackResponseB1Z/github.com/juicedata/juicefs/pkg/proxy/v1;proxyb\x06proto3"
 
 var (
@@ -1189,63 +717,39 @@ func file_tkv_proxy_proto_rawDescGZIP() []byte {
 	return file_tkv_proxy_proto_rawDescData
 }
 
-var file_tkv_proxy_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_tkv_proxy_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_tkv_proxy_proto_goTypes = []any{
 	(*BeginTxnRequest)(nil),  // 0: juicefs.proxy.v1.BeginTxnRequest
 	(*BeginTxnResponse)(nil), // 1: juicefs.proxy.v1.BeginTxnResponse
 	(*GetRequest)(nil),       // 2: juicefs.proxy.v1.GetRequest
 	(*GetResponse)(nil),      // 3: juicefs.proxy.v1.GetResponse
-	(*SetRequest)(nil),       // 4: juicefs.proxy.v1.SetRequest
-	(*SetResponse)(nil),      // 5: juicefs.proxy.v1.SetResponse
-	(*SnapGetRequest)(nil),   // 6: juicefs.proxy.v1.SnapGetRequest
-	(*SnapGetResponse)(nil),  // 7: juicefs.proxy.v1.SnapGetResponse
-	(*BatchGetRequest)(nil),  // 8: juicefs.proxy.v1.BatchGetRequest
-	(*BatchGetResponse)(nil), // 9: juicefs.proxy.v1.BatchGetResponse
-	(*DeleteRequest)(nil),    // 10: juicefs.proxy.v1.DeleteRequest
-	(*DeleteResponse)(nil),   // 11: juicefs.proxy.v1.DeleteResponse
-	(*ScanRequest)(nil),      // 12: juicefs.proxy.v1.ScanRequest
-	(*ScanResponse)(nil),     // 13: juicefs.proxy.v1.ScanResponse
-	(*ScanSnapRequest)(nil),  // 14: juicefs.proxy.v1.ScanSnapRequest
-	(*ScanSnapResponse)(nil), // 15: juicefs.proxy.v1.ScanSnapResponse
-	(*CommitRequest)(nil),    // 16: juicefs.proxy.v1.CommitRequest
-	(*CommitResponse)(nil),   // 17: juicefs.proxy.v1.CommitResponse
-	(*RollbackRequest)(nil),  // 18: juicefs.proxy.v1.RollbackRequest
-	(*RollbackResponse)(nil), // 19: juicefs.proxy.v1.RollbackResponse
-	nil,                      // 20: juicefs.proxy.v1.BatchGetResponse.ValuesEntry
-	nil,                      // 21: juicefs.proxy.v1.ScanResponse.ValuesEntry
-	nil,                      // 22: juicefs.proxy.v1.ScanSnapResponse.ValuesEntry
-	nil,                      // 23: juicefs.proxy.v1.CommitRequest.ValuesEntry
+	(*BatchGetRequest)(nil),  // 4: juicefs.proxy.v1.BatchGetRequest
+	(*BatchGetResponse)(nil), // 5: juicefs.proxy.v1.BatchGetResponse
+	(*ScanRequest)(nil),      // 6: juicefs.proxy.v1.ScanRequest
+	(*ScanResponse)(nil),     // 7: juicefs.proxy.v1.ScanResponse
+	(*CommitRequest)(nil),    // 8: juicefs.proxy.v1.CommitRequest
+	(*CommitResponse)(nil),   // 9: juicefs.proxy.v1.CommitResponse
+	(*RollbackRequest)(nil),  // 10: juicefs.proxy.v1.RollbackRequest
+	(*RollbackResponse)(nil), // 11: juicefs.proxy.v1.RollbackResponse
 }
 var file_tkv_proxy_proto_depIdxs = []int32{
-	20, // 0: juicefs.proxy.v1.BatchGetResponse.values:type_name -> juicefs.proxy.v1.BatchGetResponse.ValuesEntry
-	21, // 1: juicefs.proxy.v1.ScanResponse.values:type_name -> juicefs.proxy.v1.ScanResponse.ValuesEntry
-	22, // 2: juicefs.proxy.v1.ScanSnapResponse.values:type_name -> juicefs.proxy.v1.ScanSnapResponse.ValuesEntry
-	23, // 3: juicefs.proxy.v1.CommitRequest.values:type_name -> juicefs.proxy.v1.CommitRequest.ValuesEntry
-	0,  // 4: juicefs.proxy.v1.TxnProxyService.BeginTxn:input_type -> juicefs.proxy.v1.BeginTxnRequest
-	2,  // 5: juicefs.proxy.v1.TxnProxyService.Get:input_type -> juicefs.proxy.v1.GetRequest
-	4,  // 6: juicefs.proxy.v1.TxnProxyService.Set:input_type -> juicefs.proxy.v1.SetRequest
-	6,  // 7: juicefs.proxy.v1.TxnProxyService.SnapGet:input_type -> juicefs.proxy.v1.SnapGetRequest
-	8,  // 8: juicefs.proxy.v1.TxnProxyService.BatchGet:input_type -> juicefs.proxy.v1.BatchGetRequest
-	10, // 9: juicefs.proxy.v1.TxnProxyService.Delete:input_type -> juicefs.proxy.v1.DeleteRequest
-	12, // 10: juicefs.proxy.v1.TxnProxyService.Scan:input_type -> juicefs.proxy.v1.ScanRequest
-	14, // 11: juicefs.proxy.v1.TxnProxyService.ScanSnap:input_type -> juicefs.proxy.v1.ScanSnapRequest
-	16, // 12: juicefs.proxy.v1.TxnProxyService.Commit:input_type -> juicefs.proxy.v1.CommitRequest
-	18, // 13: juicefs.proxy.v1.TxnProxyService.Rollback:input_type -> juicefs.proxy.v1.RollbackRequest
-	1,  // 14: juicefs.proxy.v1.TxnProxyService.BeginTxn:output_type -> juicefs.proxy.v1.BeginTxnResponse
-	3,  // 15: juicefs.proxy.v1.TxnProxyService.Get:output_type -> juicefs.proxy.v1.GetResponse
-	5,  // 16: juicefs.proxy.v1.TxnProxyService.Set:output_type -> juicefs.proxy.v1.SetResponse
-	7,  // 17: juicefs.proxy.v1.TxnProxyService.SnapGet:output_type -> juicefs.proxy.v1.SnapGetResponse
-	9,  // 18: juicefs.proxy.v1.TxnProxyService.BatchGet:output_type -> juicefs.proxy.v1.BatchGetResponse
-	11, // 19: juicefs.proxy.v1.TxnProxyService.Delete:output_type -> juicefs.proxy.v1.DeleteResponse
-	13, // 20: juicefs.proxy.v1.TxnProxyService.Scan:output_type -> juicefs.proxy.v1.ScanResponse
-	15, // 21: juicefs.proxy.v1.TxnProxyService.ScanSnap:output_type -> juicefs.proxy.v1.ScanSnapResponse
-	17, // 22: juicefs.proxy.v1.TxnProxyService.Commit:output_type -> juicefs.proxy.v1.CommitResponse
-	19, // 23: juicefs.proxy.v1.TxnProxyService.Rollback:output_type -> juicefs.proxy.v1.RollbackResponse
-	14, // [14:24] is the sub-list for method output_type
-	4,  // [4:14] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	0,  // 0: juicefs.proxy.v1.TxnProxyService.BeginTxn:input_type -> juicefs.proxy.v1.BeginTxnRequest
+	2,  // 1: juicefs.proxy.v1.TxnProxyService.Get:input_type -> juicefs.proxy.v1.GetRequest
+	4,  // 2: juicefs.proxy.v1.TxnProxyService.BatchGet:input_type -> juicefs.proxy.v1.BatchGetRequest
+	6,  // 3: juicefs.proxy.v1.TxnProxyService.Scan:input_type -> juicefs.proxy.v1.ScanRequest
+	8,  // 4: juicefs.proxy.v1.TxnProxyService.Commit:input_type -> juicefs.proxy.v1.CommitRequest
+	10, // 5: juicefs.proxy.v1.TxnProxyService.Rollback:input_type -> juicefs.proxy.v1.RollbackRequest
+	1,  // 6: juicefs.proxy.v1.TxnProxyService.BeginTxn:output_type -> juicefs.proxy.v1.BeginTxnResponse
+	3,  // 7: juicefs.proxy.v1.TxnProxyService.Get:output_type -> juicefs.proxy.v1.GetResponse
+	5,  // 8: juicefs.proxy.v1.TxnProxyService.BatchGet:output_type -> juicefs.proxy.v1.BatchGetResponse
+	7,  // 9: juicefs.proxy.v1.TxnProxyService.Scan:output_type -> juicefs.proxy.v1.ScanResponse
+	9,  // 10: juicefs.proxy.v1.TxnProxyService.Commit:output_type -> juicefs.proxy.v1.CommitResponse
+	11, // 11: juicefs.proxy.v1.TxnProxyService.Rollback:output_type -> juicefs.proxy.v1.RollbackResponse
+	6,  // [6:12] is the sub-list for method output_type
+	0,  // [0:6] is the sub-list for method input_type
+	0,  // [0:0] is the sub-list for extension type_name
+	0,  // [0:0] is the sub-list for extension extendee
+	0,  // [0:0] is the sub-list for field type_name
 }
 
 func init() { file_tkv_proxy_proto_init() }
@@ -1259,7 +763,7 @@ func file_tkv_proxy_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tkv_proxy_proto_rawDesc), len(file_tkv_proxy_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   24,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

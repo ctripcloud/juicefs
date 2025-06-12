@@ -5,7 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
-
+	"strings"
 	"github.com/juicedata/juicefs/pkg/utils"
 )
 
@@ -69,7 +69,13 @@ func main() {
 			os.Exit(-2)
 		}
 
-		data := fmt.Sprintf("package meta\n\n%s\n\n%s\n\n%s\n", caData, cilentCertData, clientKeyData)
+		engineUpper := strings.ToUpper(engine)
+		getFunction := fmt.Sprintf("func Get%sTlsData() (string) {\n\treturn %s\n}\n", engineUpper+"Ca", "tikv_ca_crt")
+		getFunction += fmt.Sprintf("func Get%sTlsData() (string) {\n\treturn %s\n}\n", engineUpper+"ClientCert", "tikv_client_crt")
+		getFunction += fmt.Sprintf("func Get%sTlsData() (string) {\n\treturn %s\n}\n", engineUpper+"ClientKey", "tikv_client_key")
+
+		data := fmt.Sprintf("package meta\n\n%s\n\n%s\n\n%s\n\n%s\n", caData, cilentCertData, clientKeyData, getFunction)
+
 		os.WriteFile(gofile, []byte(data), 0666)
 		fmt.Printf("Generate tls go files for metadata engine %s done\n", engine)
 	}
