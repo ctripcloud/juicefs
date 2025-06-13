@@ -252,6 +252,12 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 	values := make([][]byte, 0)
 
 	if scanSize == 0 && iter.Valid() {
+		// just for check the iterator is valid
+		stream.Send(&proxyv1.ScanResponse{
+			Keys:    [][]byte{[]byte("__exist__")},
+			Values:  [][]byte{[]byte("__exist__")},
+			StartTs: txn.StartTS(),
+		})
 		return nil // just for check the iterator is valid
 	}
 
@@ -332,6 +338,10 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 			}
 		}
 	}
+	if len(allKeys) != len(allValues) {
+		logger.Errorf("keys and values length mismatch: %d != %d", len(allKeys), len(allValues))
+		return status.Errorf(codes.Internal, "keys and values length mismatch: %d != %d", len(allKeys), len(allValues))
+	}
 
 	if len(allValues) == 0 {
 		// TiKV disallows empty transactions, but we can treat this as a successful no-op.
@@ -342,6 +352,9 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 		// A real commit_ts is needed, so we must perform a transaction.
 		// Let's create a transaction and commit it to get a valid commitTS.
 		logger.Warnf("committing an empty transaction for start_ts: %d", startTS)
+		return stream.SendAndClose(&proxyv1.CommitResponse{
+			CommitTs: startTS,
+		})
 	}
 
 	var txn *tikv.KVTxn
@@ -356,10 +369,16 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 	}
 
 	for i, k := range allKeys {
-		if err := txn.Set(k, allValues[i]); err != nil {
+		val := allValues[i]
+		if len(val) == 0 {
+			err = txn.Delete(k)
+		} else {
+			err = txn.Set(k, val)
+		}
+		if err != nil {
 			// Best effort to rollback
 			_ = txn.Rollback()
-			return status.Errorf(codes.Internal, "failed to set key %s: %v", k, err)
+			return status.Errorf(codes.Internal, "failed to commit key %s, value %s: %v", k, val, err)
 		}
 	}
 
@@ -370,20 +389,10 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 
 	if err := txn.Commit(commitCtx); err != nil {
 		logger.Errorf("failed to commit transaction for start_ts %d: %v", startTS, err)
-		return status.Errorf(codes.Internal, "failed to commit transaction for start_ts %d: %v", startTS, err)
+		return status.Errorf(codes.Internal, "failed to commit transaction for start_ts %d: %v", txn.StartTS(), err)
 	}
-
+	
 	return stream.SendAndClose(&proxyv1.CommitResponse{
 		CommitTs: txn.StartTS(), // Note: Using StartTS as a placeholder for CommitTS
 	})
-}
-
-// Rollback implements TxnProxyServiceServer.Rollback
-func (p *TiKVProxy) Rollback(ctx context.Context, req *proxyv1.RollbackRequest) (*proxyv1.RollbackResponse, error) {
-	// In a stateless proxy model, the proxy does not hold transaction state.
-	// The client manages the transaction lifecycle. If the client decides to rollback,
-	// it simply doesn't call commit. This Rollback RPC call is effectively a no-op
-	// on the proxy side, but serves to complete the client's transactional workflow.
-	logger.Infof("received rollback for transaction %d", req.StartTs)
-	return &proxyv1.RollbackResponse{}, nil
 }

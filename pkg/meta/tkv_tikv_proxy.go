@@ -160,12 +160,31 @@ func (tx *tikvProxyTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v
 }
 
 func (tx *tikvProxyTxn) exist(prefix []byte) bool {
-	found := false
-	tx.scan(prefix, nextKey(prefix), true, func(k, v []byte) bool {
-		found = true
-		return false // Stop after finding the first key
+	stream, err := tx.client.Scan(context.TODO(), &proxyv1.ScanRequest{
+		StartTs:  tx.startTS,
+		StartKey: prefix,
+		EndKey:   nextKey(prefix),
+		ScanSize: 0,
 	})
-	return found
+	if err != nil {
+		panic(err)
+	}
+
+	resp, err := stream.Recv()
+
+	if resp != nil && len(resp.Keys) > 0 {
+		return true
+	}
+
+	if err == io.EOF {
+		return false
+	}
+
+	if err != nil {
+		panic(err)
+	}
+
+	return false
 }
 
 func (tx *tikvProxyTxn) set(key, value []byte) {
@@ -250,7 +269,7 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 	}
 
 	// Connect to the TiKV Proxy gRPC server
-	conn, err := grpc.Dial(tUrl.Host, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(tUrl.Host, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to TiKV Proxy at %s: %v", tUrl.Host, err)
 	}
