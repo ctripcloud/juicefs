@@ -133,7 +133,10 @@ func (p *TiKVProxy) Get(ctx context.Context, req *proxyv1.GetRequest) (*proxyv1.
 
 	value, err := txn.Get(ctx, req.Key)
 	if tikverr.IsErrNotFound(err) {
-		return nil, nil
+		return &proxyv1.GetResponse{
+			StartTs: txn.StartTS(),
+			Value:   nil,
+		}, nil
 	}
 
 	if err != nil {
@@ -251,13 +254,15 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 	keys := make([][]byte, 0)
 	values := make([][]byte, 0)
 
-	if scanSize == 0 && iter.Valid() {
-		// just for check the iterator is valid
-		stream.Send(&proxyv1.ScanResponse{
-			Keys:    [][]byte{[]byte("__exist__")},
-			Values:  [][]byte{[]byte("__exist__")},
-			StartTs: txn.StartTS(),
-		})
+	if scanSize == 0 {
+		if iter.Valid(){
+			// just for check the iterator is valid
+			stream.Send(&proxyv1.ScanResponse{
+				Keys:    [][]byte{[]byte("__exist__")},
+				Values:  [][]byte{[]byte("__exist__")},
+				StartTs: txn.StartTS(),
+			})
+		}
 		return nil // just for check the iterator is valid
 	}
 
@@ -328,18 +333,17 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 			startTS = req.GetStartTs()
 		}
 
-		for i, k := range req.Keys {
-			logger.Debugf("commit key: %s, value: %s", k, req.Values[i])
-			allKeys = append(allKeys, k)
-			if req.Values[i] == nil {
-				allValues = append(allValues, []byte{})
-			} else {
-				allValues = append(allValues, req.Values[i])
-			}
-		}
+		allKeys = append(allKeys, req.Keys...)
+		allValues = append(allValues, req.Values...)
 	}
 	if len(allKeys) != len(allValues) {
 		logger.Errorf("keys and values length mismatch: %d != %d", len(allKeys), len(allValues))
+		for _, k := range allKeys {
+			logger.Debugf("commit key: %s", string(k))
+		}
+		for _, v := range allValues {
+			logger.Debugf("commit value: %s", v)
+		}
 		return status.Errorf(codes.Internal, "keys and values length mismatch: %d != %d", len(allKeys), len(allValues))
 	}
 
@@ -370,6 +374,7 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 
 	for i, k := range allKeys {
 		val := allValues[i]
+		logger.Debugf("commit key: %s, value: %s", k, val)
 		if len(val) == 0 {
 			err = txn.Delete(k)
 		} else {

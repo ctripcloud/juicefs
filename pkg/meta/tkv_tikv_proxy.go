@@ -28,6 +28,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
+
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -42,14 +44,15 @@ func init() {
 type tikvProxyTxn struct {
 	client  proxyv1.TxnProxyServiceClient
 	startTS uint64
-	writes  map[string][]byte
-	retry   int
+	buffer  map[string][]byte
 }
 
 func (tx *tikvProxyTxn) get(key []byte) []byte {
-	if tx.writes != nil {
-		if v, ok := tx.writes[string(key)]; ok {
+	logger.Debugf("get key: %s, startTS: %d", string(key), tx.startTS)
+	if tx.buffer != nil {
+		if v, ok := tx.buffer[string(key)]; ok {
 			if len(v) == 0 {
+				logger.Debugf("because of deleted key, return nil")
 				return nil
 			}
 			return v
@@ -61,11 +64,13 @@ func (tx *tikvProxyTxn) get(key []byte) []byte {
 	})
 	if err != nil {
 		if status.Code(err) == 5 { // NotFound
+			logger.Debugf("because of not found, return nil")
 			return nil
 		}
 		panic(err)
 	}
-	if resp == nil {
+	if len(resp.Value) == 0 {
+		logger.Debugf("because of empty value, return nil")
 		return nil
 	}
 	if tx.startTS == 0 {
@@ -76,30 +81,31 @@ func (tx *tikvProxyTxn) get(key []byte) []byte {
 
 func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 
+	logger.Debugf("gets keys: %v, startTS: %d", keys, tx.startTS)
 	values := make([][]byte, len(keys))
-	remoteIndexes := make(map[string]int)
 	remoteKeys := make([][]byte, 0, len(keys))
 
-	// First, check local writes buffer
-	for i, key := range keys {
+	batchGetResp := make(map[string][]byte)
+	// First, check local buffer buffer
+	for _, key := range keys {
 		keyStr := string(key)
-		if tx.writes != nil {
-			if v, ok := tx.writes[keyStr]; ok {
+		if tx.buffer != nil {
+			if v, ok := tx.buffer[keyStr]; ok {
 				if len(v) == 0 {
-					values[i] = nil // Deleted key
+					batchGetResp[keyStr] = nil
 				} else {
-					values[i] = v
+					batchGetResp[keyStr] = v
 				}
 				continue
 			}
 		}
 		// Key not found in local buffer, need to fetch from remote
-		remoteIndexes[keyStr] = i
 		remoteKeys = append(remoteKeys, key)
 	}
+	logger.Debugf("remoteKeys: %v", remoteKeys)
 
 	// If we have keys to fetch from remote
-	if len(remoteIndexes) > 0 {
+	if len(remoteKeys) > 0 {
 		stream, err := tx.client.BatchGet(context.TODO(), &proxyv1.BatchGetRequest{
 			StartTs: tx.startTS,
 			Keys:    remoteKeys,
@@ -118,20 +124,22 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 				panic(err)
 			}
 			for i, key := range resp.Keys {
-				originalIndex := remoteIndexes[string(key)]
-				values[originalIndex] = resp.Values[i]
+				batchGetResp[string(key)] = resp.Values[i]
 			}
 			if tx.startTS == 0 {
 				tx.startTS = resp.StartTs
 			}
 		}
+		for i, key := range keys {
+			values[i] = batchGetResp[string(key)]
+		}
 	}
-
 	return values
 }
 
 func (tx *tikvProxyTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v []byte) bool) {
 
+	logger.Debugf("scan begin: %s, end: %s, startTS: %d", string(begin), string(end), tx.startTS)
 	stream, err := tx.client.Scan(context.TODO(), &proxyv1.ScanRequest{
 		StartTs:  tx.startTS,
 		StartKey: begin,
@@ -150,6 +158,9 @@ func (tx *tikvProxyTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v
 		if err != nil {
 			panic(err)
 		}
+		if tx.startTS == 0 {
+			tx.startTS = resp.StartTs
+		}
 		for i, k := range resp.Keys {
 			if !handler(k, resp.Values[i]) {
 				stream.CloseSend()
@@ -160,6 +171,7 @@ func (tx *tikvProxyTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v
 }
 
 func (tx *tikvProxyTxn) exist(prefix []byte) bool {
+	logger.Debugf("exist prefix: %s, startTS: %d", string(prefix), tx.startTS)
 	stream, err := tx.client.Scan(context.TODO(), &proxyv1.ScanRequest{
 		StartTs:  tx.startTS,
 		StartKey: prefix,
@@ -169,14 +181,9 @@ func (tx *tikvProxyTxn) exist(prefix []byte) bool {
 	if err != nil {
 		panic(err)
 	}
-
 	resp, err := stream.Recv()
-
-	if resp != nil && len(resp.Keys) > 0 {
-		return true
-	}
-
 	if err == io.EOF {
+		logger.Debugf("scan eof in exist, prefix: %s", string(prefix))
 		return false
 	}
 
@@ -184,46 +191,61 @@ func (tx *tikvProxyTxn) exist(prefix []byte) bool {
 		panic(err)
 	}
 
+	if tx.startTS == 0 {
+		tx.startTS = resp.StartTs
+	}
+
+	if resp != nil && len(resp.Keys) > 0 {
+		logger.Debugf("scan found in exist")
+		stream.CloseSend()
+		return true
+	}
+
+	logger.Debugf("No key found in exist, prefix: %s", string(prefix))
+
 	return false
 }
 
 func (tx *tikvProxyTxn) set(key, value []byte) {
-	if tx.writes == nil {
-		tx.writes = make(map[string][]byte)
+	if tx.buffer == nil {
+		tx.buffer = make(map[string][]byte)
 	}
-	tx.writes[string(key)] = value
+	tx.buffer[string(key)] = value
 }
 
 func (tx *tikvProxyTxn) append(key []byte, value []byte) {
+	logger.Debugf("append key: %s, value: %s, startTS: %d", string(key), string(value), tx.startTS)
 	existing := tx.get(key)
 	newValue := append(existing, value...)
 	tx.set(key, newValue)
 }
 
 func (tx *tikvProxyTxn) incrBy(key []byte, value int64) int64 {
+	logger.Debugf("incrBy key: %s, value: %d, startTS: %d", string(key), value, tx.startTS)
 	existing := tx.get(key)
-	var current int64
-	if len(existing) == 8 {
-		current = parseCounter(existing)
+	new := parseCounter(existing)
+	if value != 0 {
+		new += value
+		tx.set(key, packCounter(new))
 	}
-	newValue := current + value
-	tx.set(key, packCounter(newValue))
-	return newValue
+	return new
 }
 
 func (tx *tikvProxyTxn) delete(key []byte) {
-	if tx.writes == nil {
-		tx.writes = make(map[string][]byte)
+	logger.Debugf("delete key: %s, startTS: %d", string(key), tx.startTS)
+	if tx.buffer == nil {
+		tx.buffer = make(map[string][]byte)
 	}
-	tx.writes[string(key)] = []byte{}
+	tx.buffer[string(key)] = []byte{}
 }
 
 func (tx *tikvProxyTxn) commit() error {
-	if len(tx.writes) == 0 {
-		logger.Debugf("no writes to commit")
-		return nil // No writes to commit
+	logger.Debugf("Commit startTS: %d", tx.startTS)
+	if len(tx.buffer) == 0 {
+		logger.Debugf("no buffer to commit")
+		return nil // No buffer to commit
 	}
-	for k, v := range tx.writes {
+	for k, v := range tx.buffer {
 		logger.Debugf("commit key: %s, value: %s", k, v)
 	}
 
@@ -234,11 +256,11 @@ func (tx *tikvProxyTxn) commit() error {
 
 	keys := make([][]byte, 0)
 	values := make([][]byte, 0)
-	for k, v := range tx.writes {
+	for k, v := range tx.buffer {
 		keys = append(keys, []byte(k))
 		values = append(values, v)
 	}
-	// Send all writes in a single request
+	// Send all buffer in a single request
 	err = stream.Send(&proxyv1.CommitRequest{
 		StartTs: tx.startTS,
 		Keys:    keys,
@@ -304,51 +326,37 @@ func (c *tikvProxyClient) name() string {
 
 func (c *tikvProxyClient) shouldRetry(err error) bool {
 	// For gRPC errors, we can retry on certain conditions
-	code := status.Code(err)
-	return code == 14 || code == 4 || code == 8 || code == 5 // Unavailable, DeadlineExceeded, ResourceExhausted, NotFound
+	return strings.Contains(err.Error(), "write conflict") || strings.Contains(err.Error(), "TxnLockNotFound")
 }
 
 func (c *tikvProxyClient) txn(f func(*kvTxn) error, retry int) (err error) {
-	for i := 0; i <= retry; i++ {
-		// Begin a new transaction by getting a start timestamp
-		// For simplicity, we'll use current time as start timestamp
-		// In a real implementation, this should come from PD
+	// Begin a new transaction by getting a start timestamp
+	// For simplicity, we'll use current time as start timestamp
+	// In a real implementation, this should come from PD
 
-		proxyTxn := &tikvProxyTxn{
-			client:  c.client,
-			startTS: 0,
-			writes:  make(map[string][]byte),
-			retry:   i,
-		}
-
-		kvTx := &kvTxn{
-			kvtxn: proxyTxn,
-			retry: i,
-		}
-
-		err = f(kvTx)
-		if err != nil {
-			if c.shouldRetry(err) && i < retry {
-				logger.Warnf("TiKV Proxy transaction failed (attempt %d/%d): %v", i+1, retry+1, err)
-				time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
-				continue
-			}
-			return err
-		}
-
-		// Commit the transaction
-		err = proxyTxn.commit()
-		if err != nil {
-			if c.shouldRetry(err) && i < retry {
-				logger.Warnf("TiKV Proxy commit failed (attempt %d/%d): %v", i+1, retry+1, err)
-				time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
-				continue
-			}
-			return err
-		}
-
-		return nil
+	proxyTxn := &tikvProxyTxn{
+		client:  c.client,
+		startTS: 0,
+		buffer:  make(map[string][]byte),
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			fe, ok := r.(error)
+			if ok {
+				err = fe
+			} else {
+				err = errors.Errorf("tikv-proxy client txn func error: %v", r)
+			}
+		}
+	}()
+	err = f(&kvTxn{proxyTxn, retry})
+	if err != nil {
+		return err
+	}
+
+	// Commit the transaction
+	err = proxyTxn.commit()
+
 	return err
 }
 
