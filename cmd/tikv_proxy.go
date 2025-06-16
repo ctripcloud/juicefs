@@ -28,6 +28,9 @@ import (
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
 	"github.com/urfave/cli/v2"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/reflection"
+    "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func cmdTiKVProxy() *cli.Command {
@@ -83,6 +86,12 @@ func tikvProxyAction(c *cli.Context) error {
 	// Create gRPC server
 	grpcServer := grpc.NewServer()
 	proxyv1.RegisterTxnProxyServiceServer(grpcServer, tikvProxy)
+
+    healthServer := health.NewServer()
+    healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+    grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
+
+	reflection.Register(grpcServer)
 
 	// Listen on the specified address
 	listener, err := net.Listen("tcp", listenAddr)

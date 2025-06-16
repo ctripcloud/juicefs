@@ -32,6 +32,7 @@ import (
 
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
@@ -44,37 +45,40 @@ func init() {
 type tikvProxyTxn struct {
 	client  proxyv1.TxnProxyServiceClient
 	startTS uint64
-	buffer  map[string][]byte
+	writes  map[string][]byte
+	reads   map[string][]byte
 }
 
 func (tx *tikvProxyTxn) get(key []byte) []byte {
 	logger.Debugf("get key: %s, startTS: %d", string(key), tx.startTS)
-	if tx.buffer != nil {
-		if v, ok := tx.buffer[string(key)]; ok {
-			if len(v) == 0 {
-				logger.Debugf("because of deleted key, return nil")
-				return nil
-			}
-			return v
-		}
+	if v, ok := tx.writes[string(key)]; ok {
+		logger.Debugf("because of deleted key, return nil")
+		return v
 	}
+
+	if v, ok := tx.reads[string(key)]; ok {
+		logger.Debugf("because of ready get key, return nil")
+		return v
+	}
+
 	resp, err := tx.client.Get(context.TODO(), &proxyv1.GetRequest{
 		StartTs: tx.startTS,
 		Key:     key,
 	})
 	if err != nil {
-		if status.Code(err) == 5 { // NotFound
+		if status.Code(err) == codes.NotFound { // NotFound
 			logger.Debugf("because of not found, return nil")
 			return nil
 		}
 		panic(err)
 	}
-	if len(resp.Value) == 0 {
-		logger.Debugf("because of empty value, return nil")
-		return nil
-	}
 	if tx.startTS == 0 {
 		tx.startTS = resp.StartTs
+	}
+
+	tx.reads[string(key)] = resp.Value
+	if len(resp.Value) == 0 {
+		logger.Debugf("because of empty value, return nil")
 	}
 	return resp.Value
 }
@@ -89,15 +93,13 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 	// First, check local buffer buffer
 	for _, key := range keys {
 		keyStr := string(key)
-		if tx.buffer != nil {
-			if v, ok := tx.buffer[keyStr]; ok {
-				if len(v) == 0 {
-					batchGetResp[keyStr] = nil
-				} else {
-					batchGetResp[keyStr] = v
-				}
-				continue
-			}
+		if v, ok := tx.writes[keyStr]; ok {
+			batchGetResp[keyStr] = v
+			continue
+		}
+		if v, ok := tx.reads[keyStr]; ok {
+			batchGetResp[keyStr] = v
+			continue
 		}
 		// Key not found in local buffer, need to fetch from remote
 		remoteKeys = append(remoteKeys, key)
@@ -125,6 +127,7 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 			}
 			for i, key := range resp.Keys {
 				batchGetResp[string(key)] = resp.Values[i]
+				tx.reads[string(key)] = resp.Values[i]
 			}
 			if tx.startTS == 0 {
 				tx.startTS = resp.StartTs
@@ -207,10 +210,10 @@ func (tx *tikvProxyTxn) exist(prefix []byte) bool {
 }
 
 func (tx *tikvProxyTxn) set(key, value []byte) {
-	if tx.buffer == nil {
-		tx.buffer = make(map[string][]byte)
+	if tx.writes == nil {
+		tx.writes = make(map[string][]byte)
 	}
-	tx.buffer[string(key)] = value
+	tx.writes[string(key)] = value
 }
 
 func (tx *tikvProxyTxn) append(key []byte, value []byte) {
@@ -233,19 +236,19 @@ func (tx *tikvProxyTxn) incrBy(key []byte, value int64) int64 {
 
 func (tx *tikvProxyTxn) delete(key []byte) {
 	logger.Debugf("delete key: %s, startTS: %d", string(key), tx.startTS)
-	if tx.buffer == nil {
-		tx.buffer = make(map[string][]byte)
+	if tx.writes == nil {
+		tx.writes = make(map[string][]byte)
 	}
-	tx.buffer[string(key)] = []byte{}
+	tx.writes[string(key)] = []byte{}
 }
 
 func (tx *tikvProxyTxn) commit() error {
 	logger.Debugf("Commit startTS: %d", tx.startTS)
-	if len(tx.buffer) == 0 {
+	if len(tx.writes) == 0 {
 		logger.Debugf("no buffer to commit")
 		return nil // No buffer to commit
 	}
-	for k, v := range tx.buffer {
+	for k, v := range tx.writes {
 		logger.Debugf("commit key: %s, value: %s", k, v)
 	}
 
@@ -256,7 +259,7 @@ func (tx *tikvProxyTxn) commit() error {
 
 	keys := make([][]byte, 0)
 	values := make([][]byte, 0)
-	for k, v := range tx.buffer {
+	for k, v := range tx.writes {
 		keys = append(keys, []byte(k))
 		values = append(values, v)
 	}
@@ -291,7 +294,9 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 	}
 
 	// Connect to the TiKV Proxy gRPC server
-	conn, err := grpc.NewClient(tUrl.Host, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(tUrl.Host, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultServiceConfig(`{
+		"loadBalancingPolicy": "round_robin"
+	}`))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to TiKV Proxy at %s: %v", tUrl.Host, err)
 	}
@@ -337,7 +342,8 @@ func (c *tikvProxyClient) txn(f func(*kvTxn) error, retry int) (err error) {
 	proxyTxn := &tikvProxyTxn{
 		client:  c.client,
 		startTS: 0,
-		buffer:  make(map[string][]byte),
+		writes:  make(map[string][]byte),
+		reads:   make(map[string][]byte),
 	}
 	defer func() {
 		if r := recover(); r != nil {

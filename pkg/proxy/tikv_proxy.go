@@ -255,7 +255,7 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 	values := make([][]byte, 0)
 
 	if scanSize == 0 {
-		if iter.Valid(){
+		if iter.Valid() {
 			// just for check the iterator is valid
 			stream.Send(&proxyv1.ScanResponse{
 				Keys:    [][]byte{[]byte("__exist__")},
@@ -371,6 +371,8 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
 	}
+	txn.SetEnable1PC(true)
+	txn.SetEnableAsyncCommit(true)
 
 	for i, k := range allKeys {
 		val := allValues[i]
@@ -396,7 +398,7 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 		logger.Errorf("failed to commit transaction for start_ts %d: %v", startTS, err)
 		return status.Errorf(codes.Internal, "failed to commit transaction for start_ts %d: %v", txn.StartTS(), err)
 	}
-	
+
 	return stream.SendAndClose(&proxyv1.CommitResponse{
 		CommitTs: txn.StartTS(), // Note: Using StartTS as a placeholder for CommitTS
 	})
