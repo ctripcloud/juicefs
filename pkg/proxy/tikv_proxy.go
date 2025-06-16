@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"io"
 	"math"
 	"net/url"
 	"os"
@@ -150,7 +149,7 @@ func (p *TiKVProxy) Get(ctx context.Context, req *proxyv1.GetRequest) (*proxyv1.
 }
 
 // BatchGet implements TxnProxyServiceServer.BatchGet
-func (p *TiKVProxy) BatchGet(req *proxyv1.BatchGetRequest, stream proxyv1.TxnProxyService_BatchGetServer) error {
+func (p *TiKVProxy) BatchGet(ctx context.Context, req *proxyv1.BatchGetRequest) (*proxyv1.BatchGetResponse, error) {
 	startTS := req.StartTs
 
 	var txn *tikv.KVTxn
@@ -158,7 +157,7 @@ func (p *TiKVProxy) BatchGet(req *proxyv1.BatchGetRequest, stream proxyv1.TxnPro
 	if startTS != 0 {
 		txn, err = p.client.Begin(tikv.WithStartTS(startTS))
 		if err != nil {
-			return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
+			return nil, status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
 		}
 		if startTS == math.MaxUint64 {
 			txn.GetSnapshot().SetIsolationLevel(txnkv.RC) // RC isolation to skip lock checking in TiKV
@@ -167,59 +166,27 @@ func (p *TiKVProxy) BatchGet(req *proxyv1.BatchGetRequest, stream proxyv1.TxnPro
 		txn, err = p.client.Begin()
 	}
 	if err != nil {
-		return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
 	}
 
-	kvRes, err := txn.BatchGet(stream.Context(), req.Keys)
+	kvRes, err := txn.BatchGet(ctx, req.Keys)
 	if err != nil {
 		logger.Errorf("failed to batch get: %v", err)
-		return status.Errorf(codes.Internal, "failed to batch get: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to batch get: %v", err)
 	}
 
-	cnt := 0
-	keys := make([][]byte, 0)
-	values := make([][]byte, 0)
+	keys := make([][]byte, 0, len(kvRes))
+	values := make([][]byte, 0, len(kvRes))
 	for key, value := range kvRes {
-		if cnt >= batchSize {
-			if err := stream.Send(&proxyv1.BatchGetResponse{
-				Keys:    keys,
-				Values:  values,
-				StartTs: txn.StartTS(),
-			}); err != nil {
-				// Client closed the stream, stop processing immediately
-				return err
-			}
-			keys = make([][]byte, 0)
-			values = make([][]byte, 0)
-			cnt = 0
-		}
-		cnt++
 		keys = append(keys, []byte(key))
 		values = append(values, value)
-
-		// Check if client closed the stream by testing context cancellation
-		select {
-		case <-stream.Context().Done():
-			// Client closed the stream, stop processing immediately
-			return stream.Context().Err()
-		default:
-			// Continue processing
-		}
 	}
 
-	if cnt > 0 {
-		if err := stream.Send(&proxyv1.BatchGetResponse{
-			Keys:    keys,
-			Values:  values,
-			StartTs: txn.StartTS(),
-		}); err != nil {
-			logger.Debugf("failed to send batch get response: %v", err)
-			// Client closed the stream
-			return err
-		}
-	}
-
-	return nil
+	return &proxyv1.BatchGetResponse{
+		StartTs: txn.StartTS(),
+		Keys:    keys,
+		Values:  values,
+	}, nil
 }
 
 // Scan implements TxnProxyServiceServer.Scan
@@ -312,33 +279,15 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 }
 
 // Commit implements TxnProxyServiceServer.Commit
-func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
+func (p *TiKVProxy) Commit(ctx context.Context, req *proxyv1.CommitRequest) (*proxyv1.CommitResponse, error) {
 	logger.Debugf("received commit request")
-	allKeys := make([][]byte, 0)
-	allValues := make([][]byte, 0)
-	var startTS uint64
-	for {
-		req, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return status.Errorf(codes.Internal, "failed to receive from stream: %v", err)
-		}
+	allKeys := req.Keys
+	allValues := req.Values
 
-		// In a stateless proxy, the start_ts from the client is mainly for consistency checks on the client-side.
-		// The proxy will start a new transaction for the commit.
-		// We can still capture it for logging or potential future use.
-		if startTS == 0 {
-			startTS = req.GetStartTs()
-		}
-
-		allKeys = append(allKeys, req.Keys...)
-		allValues = append(allValues, req.Values...)
-		if len(allKeys) == int(req.TotalKeys) {
-			break
-		}
-	}
+	// In a stateless proxy, the start_ts from the client is mainly for consistency checks on the client-side.
+	// The proxy will start a new transaction for the commit.
+	// We can still capture it for logging or potential future use.
+	var startTS uint64 = req.StartTs
 
 	if len(allKeys) != len(allValues) {
 		logger.Errorf("keys and values length mismatch: %d != %d", len(allKeys), len(allValues))
@@ -348,7 +297,7 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 		for _, v := range allValues {
 			logger.Debugf("commit value: %s", v)
 		}
-		return status.Errorf(codes.Internal, "keys and values length mismatch: %d != %d", len(allKeys), len(allValues))
+		return nil, status.Errorf(codes.Internal, "keys and values length mismatch: %d != %d", len(allKeys), len(allValues))
 	}
 
 	if len(allValues) == 0 {
@@ -360,9 +309,7 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 		// A real commit_ts is needed, so we must perform a transaction.
 		// Let's create a transaction and commit it to get a valid commitTS.
 		logger.Warnf("committing an empty transaction for start_ts: %d", startTS)
-		return stream.SendAndClose(&proxyv1.CommitResponse{
-			CommitTs: startTS,
-		})
+		return nil, status.Errorf(codes.InvalidArgument, "committing an empty transaction for start_ts: %d", startTS)
 	}
 
 	var txn *tikv.KVTxn
@@ -373,14 +320,14 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 		txn, err = p.client.Begin()
 	}
 	if err != nil {
-		return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
 	}
+
 	txn.SetEnable1PC(true)
 	txn.SetEnableAsyncCommit(true)
 
 	for i, k := range allKeys {
 		val := allValues[i]
-		logger.Debugf("commit key: %s, value: %s", k, val)
 		if len(val) == 0 {
 			err = txn.Delete(k)
 		} else {
@@ -389,7 +336,7 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 		if err != nil {
 			// Best effort to rollback
 			_ = txn.Rollback()
-			return status.Errorf(codes.Internal, "failed to commit key %s, value %s: %v", k, val, err)
+			return nil, status.Errorf(codes.Internal, "failed to commit key %s, value %s: %v", k, val, err)
 		}
 	}
 
@@ -400,10 +347,10 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 
 	if err := txn.Commit(commitCtx); err != nil {
 		logger.Errorf("failed to commit transaction for start_ts %d: %v", startTS, err)
-		return status.Errorf(codes.Internal, "failed to commit transaction for start_ts %d: %v", txn.StartTS(), err)
+		return nil, status.Errorf(codes.Internal, "failed to commit transaction for start_ts %d: %v", txn.StartTS(), err)
 	}
 
-	return stream.SendAndClose(&proxyv1.CommitResponse{
+	return &proxyv1.CommitResponse{
 		CommitTs: txn.StartTS(), // Note: Using StartTS as a placeholder for CommitTS
-	})
+	}, nil
 }

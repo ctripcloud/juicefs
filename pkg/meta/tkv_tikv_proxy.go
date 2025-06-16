@@ -84,33 +84,30 @@ func (tx *tikvProxyTxn) get(key []byte) []byte {
 }
 
 func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
-
 	logger.Debugf("gets keys: %v, startTS: %d", keys, tx.startTS)
 	values := make([][]byte, len(keys))
 	remoteKeys := make([][]byte, 0, len(keys))
+	remoteIndex := make(map[string]int)
 
-	batchGetResp := make(map[string][]byte)
 	// First, check local buffer buffer
-	for _, key := range keys {
+	for i, key := range keys {
 		keyStr := string(key)
 		if v, ok := tx.writes[keyStr]; ok {
-			batchGetResp[keyStr] = v
+			values[i] = v
 			continue
 		}
 		if v, ok := tx.reads[keyStr]; ok {
-			batchGetResp[keyStr] = v
+			values[i] = v
 			continue
 		}
 		// Key not found in local buffer, need to fetch from remote
 		remoteKeys = append(remoteKeys, key)
+		remoteIndex[string(key)] = i
 	}
-	logger.Debugf("remoteKeys: %v", remoteKeys)
 
 	// If we have keys to fetch from remote
 	if len(remoteKeys) > 0 {
-		streamCtx, streamCancel := context.WithCancel(context.Background())
-		defer streamCancel()
-		stream, err := tx.client.BatchGet(streamCtx, &proxyv1.BatchGetRequest{
+		resp, err := tx.client.BatchGet(context.TODO(), &proxyv1.BatchGetRequest{
 			StartTs: tx.startTS,
 			Keys:    remoteKeys,
 		})
@@ -118,28 +115,12 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 			logger.Errorf("failed to batch get: %v", err)
 			panic(err)
 		}
-		for {
-			resp, err := stream.Recv()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				logger.Errorf("failed to batch get: %v", err)
-				panic(err)
-			}
-			for i, key := range resp.Keys {
-				batchGetResp[string(key)] = resp.Values[i]
-				tx.reads[string(key)] = resp.Values[i]
-			}
-			if tx.startTS == 0 {
-				tx.startTS = resp.StartTs
-			}
-			if len(batchGetResp) == len(remoteKeys) {
-				break
-			}
+		for i, key := range resp.Keys {
+			values[remoteIndex[string(key)]] = resp.Values[i]
+			tx.reads[string(key)] = resp.Values[i]
 		}
-		for i, key := range keys {
-			values[i] = batchGetResp[string(key)]
+		if tx.startTS == 0 {
+			tx.startTS = resp.StartTs
 		}
 	}
 	return values
@@ -254,36 +235,19 @@ func (tx *tikvProxyTxn) commit() error {
 		logger.Debugf("no buffer to commit")
 		return nil // No buffer to commit
 	}
-	for k, v := range tx.writes {
-		logger.Debugf("commit key: %s, value: %s", k, v)
-	}
-	streamCtx, streamCancel := context.WithCancel(context.Background())
-	defer streamCancel()
-	stream, err := tx.client.Commit(streamCtx)
-	if err != nil {
-		return err
-	}
-
-	keys := make([][]byte, 0)
-	values := make([][]byte, 0)
+	keys := make([][]byte, 0, len(tx.writes))
+	values := make([][]byte, 0, len(tx.writes))
 	for k, v := range tx.writes {
 		keys = append(keys, []byte(k))
 		values = append(values, v)
 	}
-	// Send all buffer in a single request
-	err = stream.Send(&proxyv1.CommitRequest{
+
+	_, err := tx.client.Commit(context.TODO(), &proxyv1.CommitRequest{
 		StartTs: tx.startTS,
 		Keys:    keys,
 		Values:  values,
-		TotalKeys: int32(len(tx.writes)),
 	})
-	if err != nil {
-		return err
-	}
 
-	// Close the send side and wait for server response
-	// CloseAndRecv() closes the send side and waits for the server to close the stream
-	_, err = stream.CloseAndRecv()
 	return err
 }
 
