@@ -60,6 +60,7 @@ type tkvClient interface {
 	close() error
 	shouldRetry(err error) bool
 	gc()
+	simpleTxn(f func(*kvTxn) error, retry int) (err error)
 }
 
 type kvTxn struct {
@@ -383,7 +384,7 @@ func (m *kvMeta) parseQuota(buf []byte) *Quota {
 
 func (m *kvMeta) get(key []byte) ([]byte, error) {
 	var value []byte
-	err := m.client.txn(func(tx *kvTxn) error {
+	err := m.client.simpleTxn(func(tx *kvTxn) error {
 		value = tx.get(key)
 		return nil
 	}, 0)
@@ -941,7 +942,7 @@ func (m *kvMeta) doLookup(ctx Context, parent Ino, name string, inode *Ino, attr
 }
 
 func (m *kvMeta) doGetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno {
-	return errno(m.client.txn(func(tx *kvTxn) error {
+	return errno(m.client.simpleTxn(func(tx *kvTxn) error {
 		val := tx.get(m.inodeKey(inode))
 		if val == nil {
 			return syscall.ENOENT
@@ -1841,7 +1842,7 @@ func (m *kvMeta) fillAttr(entries []*Entry) (err error) {
 		keys[i] = m.inodeKey(e.Inode)
 	}
 	var rs [][]byte
-	err = m.client.txn(func(tx *kvTxn) error {
+	err = m.client.simpleTxn(func(tx *kvTxn) error {
 		rs = tx.gets(keys...)
 		return nil
 	}, 0)

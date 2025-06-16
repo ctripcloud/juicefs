@@ -25,6 +25,8 @@ import (
 	"os"
 	"strings"
 	"time"
+	"math"
+	"syscall"
 
 	"github.com/juicedata/juicefs/pkg/utils"
 	plog "github.com/pingcap/log"
@@ -333,4 +335,29 @@ func (c *tikvClient) gc() {
 	} else {
 		logger.Warnf("TiKV GC: %s", err)
 	}
+}
+
+
+func (c *tikvClient) simpleTxn(f func(*kvTxn) error, retry int) (err error) {
+	tx, err := c.client.Begin(tikv.WithStartTS(math.MaxUint64)) // math.MaxUint64 means to point get the latest committed data without PD access
+	if err != nil {
+		return errors.Wrap(err, "failed to begin transaction")
+	}
+	tx.GetSnapshot().SetIsolationLevel(txnkv.RC) // RC isolation to skip lock checking in TiKV
+	defer func() {
+		if r := recover(); r != nil {
+			if e, ok := r.(error); ok {
+				err = e
+			} else {
+				err = errors.Errorf("panic in point get transaction: %v", r)
+			}
+		}
+	}()
+	if err = f(&kvTxn{&tikvTxn{tx}, retry}); err != nil {
+		return err
+	}
+	if !tx.IsReadOnly() {
+		return syscall.EINVAL
+	}
+	return nil
 }

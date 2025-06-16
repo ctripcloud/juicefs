@@ -340,3 +340,7 @@ func init() {
 	Register("etcd", newKVMeta)
 	drivers["etcd"] = newEtcdClient
 }
+
+func (c *etcdClient) simpleTxn(f func(*kvTxn) error, retry int) (err error) {
+	return nil
+}

@@ -270,3 +270,7 @@ func (c *memKV) close() error {
 }
 
 func (c *memKV) gc() {}
+
+func (c *memKV) simpleTxn(f func(*kvTxn) error, retry int) (err error) {
+	return nil
+}

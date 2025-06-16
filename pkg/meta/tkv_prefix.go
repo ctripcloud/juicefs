@@ -114,3 +114,7 @@ func (tx *prefixTxn) rawGet(key []byte) []byte {
 func (tx *prefixTxn) rawDelete(key []byte) {
 	tx.kvTxn.delete(key)
 }
+
+func (c *prefixClient) simpleTxn(f func(*kvTxn) error, retry int) (err error) {
+	return c.tkvClient.simpleTxn(f, retry)
+}

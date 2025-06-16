@@ -175,3 +175,8 @@ func (tx *fdbTxn) incrBy(key []byte, value int64) int64 {
 func (tx *fdbTxn) delete(key []byte) {
 	tx.Clear(fdb.Key(key))
 }
+
+
+func (c *fdbClient) simpleTxn(f func(*kvTxn) error, retry int) (err error) {
+	return nil
+}

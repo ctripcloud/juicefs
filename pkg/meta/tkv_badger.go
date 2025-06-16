@@ -221,3 +221,7 @@ func init() {
 	Register("badger", newKVMeta)
 	drivers["badger"] = newBadgerClient
 }
+
+func (c *badgerClient) simpleTxn(f func(*kvTxn) error, retry int) (err error) {
+	return nil
+}

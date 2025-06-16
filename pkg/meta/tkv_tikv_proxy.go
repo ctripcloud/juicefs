@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"syscall"
 	"net/url"
 	"strings"
 	"time"
@@ -384,4 +385,33 @@ func (c *tikvProxyClient) close() error {
 func (c *tikvProxyClient) gc() {
 	// GC is handled by the TiKV Proxy server, nothing to do here
 	logger.Debug("TiKV Proxy client GC called (no-op)")
+}
+
+func (c *tikvProxyClient) simpleTxn(f func(*kvTxn) error, retry int) (err error) {
+	proxyTxn := &tikvProxyTxn{
+		client:  c.client,
+		startTS: math.MaxUint64,
+		writes:  make(map[string][]byte),
+		reads:   make(map[string][]byte),
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			fe, ok := r.(error)
+			if ok {
+				err = fe
+			} else {
+				err = errors.Errorf("tikv-proxy client txn func error: %v", r)
+			}
+		}
+	}()
+	err = f(&kvTxn{proxyTxn, retry})
+	if err != nil {
+		return err
+	}
+
+	if len(proxyTxn.writes) > 0 {
+		return syscall.EINVAL
+	}
+
+	return err
 }
