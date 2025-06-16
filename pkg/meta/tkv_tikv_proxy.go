@@ -108,7 +108,9 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 
 	// If we have keys to fetch from remote
 	if len(remoteKeys) > 0 {
-		stream, err := tx.client.BatchGet(context.TODO(), &proxyv1.BatchGetRequest{
+		streamCtx, streamCancel := context.WithCancel(context.Background())
+		defer streamCancel()
+		stream, err := tx.client.BatchGet(streamCtx, &proxyv1.BatchGetRequest{
 			StartTs: tx.startTS,
 			Keys:    remoteKeys,
 		})
@@ -132,6 +134,9 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 			if tx.startTS == 0 {
 				tx.startTS = resp.StartTs
 			}
+			if len(batchGetResp) == len(remoteKeys) {
+				break
+			}
 		}
 		for i, key := range keys {
 			values[i] = batchGetResp[string(key)]
@@ -143,7 +148,9 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 func (tx *tikvProxyTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v []byte) bool) {
 
 	logger.Debugf("scan begin: %s, end: %s, startTS: %d", string(begin), string(end), tx.startTS)
-	stream, err := tx.client.Scan(context.TODO(), &proxyv1.ScanRequest{
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	stream, err := tx.client.Scan(streamCtx, &proxyv1.ScanRequest{
 		StartTs:  tx.startTS,
 		StartKey: begin,
 		EndKey:   end,
@@ -166,7 +173,6 @@ func (tx *tikvProxyTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v
 		}
 		for i, k := range resp.Keys {
 			if !handler(k, resp.Values[i]) {
-				stream.CloseSend()
 				return
 			}
 		}
@@ -251,8 +257,9 @@ func (tx *tikvProxyTxn) commit() error {
 	for k, v := range tx.writes {
 		logger.Debugf("commit key: %s, value: %s", k, v)
 	}
-
-	stream, err := tx.client.Commit(context.TODO())
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	stream, err := tx.client.Commit(streamCtx)
 	if err != nil {
 		return err
 	}
@@ -268,6 +275,7 @@ func (tx *tikvProxyTxn) commit() error {
 		StartTs: tx.startTS,
 		Keys:    keys,
 		Values:  values,
+		TotalKeys: int32(len(tx.writes)),
 	})
 	if err != nil {
 		return err
@@ -296,7 +304,7 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 	// Connect to the TiKV Proxy gRPC server
 	conn, err := grpc.NewClient(tUrl.Host, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultServiceConfig(`{
 		"loadBalancingPolicy": "round_robin"
-	}`))
+	}`), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(math.MaxInt32)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to TiKV Proxy at %s: %v", tUrl.Host, err)
 	}

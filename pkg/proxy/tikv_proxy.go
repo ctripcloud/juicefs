@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	batchSize = 100
+	batchSize = 4096
 )
 
 // TiKVProxy implements proxy for tikv with transaction management
@@ -290,7 +290,7 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 		select {
 		case <-stream.Context().Done():
 			// Client closed the stream, stop scanning immediately
-			return stream.Context().Err()
+			return nil
 		default:
 			// Continue scanning
 		}
@@ -335,7 +335,11 @@ func (p *TiKVProxy) Commit(stream proxyv1.TxnProxyService_CommitServer) error {
 
 		allKeys = append(allKeys, req.Keys...)
 		allValues = append(allValues, req.Values...)
+		if len(allKeys) == int(req.TotalKeys) {
+			break
+		}
 	}
+
 	if len(allKeys) != len(allValues) {
 		logger.Errorf("keys and values length mismatch: %d != %d", len(allKeys), len(allValues))
 		for _, k := range allKeys {

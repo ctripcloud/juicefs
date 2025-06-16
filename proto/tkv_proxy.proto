@@ -62,9 +62,9 @@ message ScanResponse {
 // Commit transaction
 message CommitRequest {
     uint64 start_ts = 1;
-    repeated bytes keys = 3;
-    repeated bytes values = 4;
-    bool should_retry = 5;
+    repeated bytes keys = 2;
+    repeated bytes values = 3;
+    int32 total_keys = 4;
 }
 
 message CommitResponse {
