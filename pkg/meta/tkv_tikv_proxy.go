@@ -30,12 +30,28 @@ import (
 
 	"github.com/pkg/errors"
 
+	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/keepalive"
 )
+
+const (
+	// DefStoreLivenessTimeout is the default value for store liveness timeout.
+	DefStoreLivenessTimeout       = "3s"
+	DefGrpcInitialWindowSize      = 1 << 27 // 128MiB
+	DefGrpcInitialConnWindowSize  = 1 << 27 // 128MiB
+	DefMaxConcurrencyRequestLimit = math.MaxInt64
+
+	dialTimeout       = 5 * time.Second
+	keepAlive         = 10 * time.Second
+	keepAliveTimeout  = 3 * time.Second
+)
+
 var batchSize = DirBatchNum["kv"] + 1
 
 func init() {
@@ -255,10 +271,36 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 		return nil, err
 	}
 
+	opts := []grpc.DialOption{
+		grpc.WithInitialWindowSize(DefGrpcInitialConnWindowSize),
+		grpc.WithInitialConnWindowSize(DefGrpcInitialConnWindowSize),
+		grpc.WithUnaryInterceptor(grpc_opentracing.UnaryClientInterceptor()),
+		grpc.WithStreamInterceptor(grpc_opentracing.StreamClientInterceptor()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(math.MaxInt32)),
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff: backoff.Config{
+				BaseDelay:  100 * time.Millisecond, // Default was 1s.
+				Multiplier: 1.6,                    // Default
+				Jitter:     0.2,                    // Default
+				MaxDelay:   3 * time.Second,        // Default was 120s.
+			},
+			MinConnectTimeout: dialTimeout,
+		}),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:    keepAlive,
+			Timeout: keepAliveTimeout,
+		}),
+		grpc.WithDefaultServiceConfig(`{
+			"loadBalancingPolicy": "round_robin",
+			"healthCheckConfig": {
+				"serviceName": ""
+			}
+		}`),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+
 	// Connect to the TiKV Proxy gRPC server
-	conn, err := grpc.NewClient(tUrl.Host, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultServiceConfig(`{
-		"loadBalancingPolicy": "round_robin"
-	}`), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(math.MaxInt32)))
+	conn, err := grpc.NewClient(tUrl.Host, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to TiKV Proxy at %s: %v", tUrl.Host, err)
 	}

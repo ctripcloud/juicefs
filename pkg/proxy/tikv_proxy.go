@@ -109,14 +109,14 @@ func (p *TiKVProxy) SetTestKey(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	err = txn.Set([]byte("__test__"), []byte("__test__"))
+	err = txn.Set([]byte("__ctrip_test__"), []byte("__test__"))
 	if err != nil {
 		return err
 	}
 	if err := txn.Commit(ctx); err != nil {
 		return err
 	}
-	logger.Debugf("set test key: __test__")
+	logger.Debugf("set test key: __ctrip_test__")
 	return nil
 }
 
