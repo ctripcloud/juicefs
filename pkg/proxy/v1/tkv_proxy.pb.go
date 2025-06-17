@@ -313,6 +313,7 @@ type ScanResponse struct {
 	StartTs       uint64                 `protobuf:"varint,1,opt,name=start_ts,json=startTs,proto3" json:"start_ts,omitempty"`
 	Keys          [][]byte               `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
 	Values        [][]byte               `protobuf:"bytes,3,rep,name=values,proto3" json:"values,omitempty"`
+	Eof           bool                   `protobuf:"varint,4,opt,name=eof,proto3" json:"eof,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -366,6 +367,13 @@ func (x *ScanResponse) GetValues() [][]byte {
 		return x.Values
 	}
 	return nil
+}
+
+func (x *ScanResponse) GetEof() bool {
+	if x != nil {
+		return x.Eof
+	}
+	return false
 }
 
 // Commit transaction
@@ -496,21 +504,22 @@ const file_tkv_proxy_proto_rawDesc = "" +
 	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\x12\x1b\n" +
 	"\tstart_key\x18\x02 \x01(\fR\bstartKey\x12\x17\n" +
 	"\aend_key\x18\x03 \x01(\fR\x06endKey\x12\x1b\n" +
-	"\tscan_size\x18\x04 \x01(\x05R\bscanSize\"U\n" +
+	"\tscan_size\x18\x04 \x01(\x05R\bscanSize\"g\n" +
 	"\fScanResponse\x12\x19\n" +
 	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\x12\x12\n" +
 	"\x04keys\x18\x02 \x03(\fR\x04keys\x12\x16\n" +
-	"\x06values\x18\x03 \x03(\fR\x06values\"V\n" +
+	"\x06values\x18\x03 \x03(\fR\x06values\x12\x10\n" +
+	"\x03eof\x18\x04 \x01(\bR\x03eof\"V\n" +
 	"\rCommitRequest\x12\x19\n" +
 	"\bstart_ts\x18\x01 \x01(\x04R\astartTs\x12\x12\n" +
 	"\x04keys\x18\x02 \x03(\fR\x04keys\x12\x16\n" +
 	"\x06values\x18\x03 \x03(\fR\x06values\"-\n" +
 	"\x0eCommitResponse\x12\x1b\n" +
-	"\tcommit_ts\x18\x01 \x01(\x04R\bcommitTs2\xbe\x02\n" +
+	"\tcommit_ts\x18\x01 \x01(\x04R\bcommitTs2\xbc\x02\n" +
 	"\x0fTxnProxyService\x12B\n" +
 	"\x03Get\x12\x1c.juicefs.proxy.v1.GetRequest\x1a\x1d.juicefs.proxy.v1.GetResponse\x12Q\n" +
-	"\bBatchGet\x12!.juicefs.proxy.v1.BatchGetRequest\x1a\".juicefs.proxy.v1.BatchGetResponse\x12G\n" +
-	"\x04Scan\x12\x1d.juicefs.proxy.v1.ScanRequest\x1a\x1e.juicefs.proxy.v1.ScanResponse0\x01\x12K\n" +
+	"\bBatchGet\x12!.juicefs.proxy.v1.BatchGetRequest\x1a\".juicefs.proxy.v1.BatchGetResponse\x12E\n" +
+	"\x04Scan\x12\x1d.juicefs.proxy.v1.ScanRequest\x1a\x1e.juicefs.proxy.v1.ScanResponse\x12K\n" +
 	"\x06Commit\x12\x1f.juicefs.proxy.v1.CommitRequest\x1a .juicefs.proxy.v1.CommitResponseB1Z/github.com/juicedata/juicefs/pkg/proxy/v1;proxyb\x06proto3"
 
 var (

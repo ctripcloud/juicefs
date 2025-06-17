@@ -14,7 +14,7 @@ service TxnProxyService {
     rpc BatchGet(BatchGetRequest) returns (BatchGetResponse);
     
     // Scan keys with streaming response
-    rpc Scan(ScanRequest) returns (stream ScanResponse);
+    rpc Scan(ScanRequest) returns (ScanResponse);
 
     // Commit transaction
     rpc Commit(CommitRequest) returns (CommitResponse);
@@ -56,6 +56,7 @@ message ScanResponse {
     uint64 start_ts = 1;
     repeated bytes keys = 2;
     repeated bytes values = 3;
+    bool eof = 4;
 }
 
 

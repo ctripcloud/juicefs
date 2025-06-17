@@ -36,7 +36,7 @@ type TxnProxyServiceClient interface {
 	// BatchGet multiple keys with streaming response
 	BatchGet(ctx context.Context, in *BatchGetRequest, opts ...grpc.CallOption) (*BatchGetResponse, error)
 	// Scan keys with streaming response
-	Scan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ScanResponse], error)
+	Scan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (*ScanResponse, error)
 	// Commit transaction
 	Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error)
 }
@@ -69,24 +69,15 @@ func (c *txnProxyServiceClient) BatchGet(ctx context.Context, in *BatchGetReques
 	return out, nil
 }
 
-func (c *txnProxyServiceClient) Scan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ScanResponse], error) {
+func (c *txnProxyServiceClient) Scan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (*ScanResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &TxnProxyService_ServiceDesc.Streams[0], TxnProxyService_Scan_FullMethodName, cOpts...)
+	out := new(ScanResponse)
+	err := c.cc.Invoke(ctx, TxnProxyService_Scan_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[ScanRequest, ScanResponse]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-	return x, nil
+	return out, nil
 }
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type TxnProxyService_ScanClient = grpc.ServerStreamingClient[ScanResponse]
 
 func (c *txnProxyServiceClient) Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -109,7 +100,7 @@ type TxnProxyServiceServer interface {
 	// BatchGet multiple keys with streaming response
 	BatchGet(context.Context, *BatchGetRequest) (*BatchGetResponse, error)
 	// Scan keys with streaming response
-	Scan(*ScanRequest, grpc.ServerStreamingServer[ScanResponse]) error
+	Scan(context.Context, *ScanRequest) (*ScanResponse, error)
 	// Commit transaction
 	Commit(context.Context, *CommitRequest) (*CommitResponse, error)
 	mustEmbedUnimplementedTxnProxyServiceServer()
@@ -128,8 +119,8 @@ func (UnimplementedTxnProxyServiceServer) Get(context.Context, *GetRequest) (*Ge
 func (UnimplementedTxnProxyServiceServer) BatchGet(context.Context, *BatchGetRequest) (*BatchGetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BatchGet not implemented")
 }
-func (UnimplementedTxnProxyServiceServer) Scan(*ScanRequest, grpc.ServerStreamingServer[ScanResponse]) error {
-	return status.Errorf(codes.Unimplemented, "method Scan not implemented")
+func (UnimplementedTxnProxyServiceServer) Scan(context.Context, *ScanRequest) (*ScanResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Scan not implemented")
 }
 func (UnimplementedTxnProxyServiceServer) Commit(context.Context, *CommitRequest) (*CommitResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Commit not implemented")
@@ -191,16 +182,23 @@ func _TxnProxyService_BatchGet_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
-func _TxnProxyService_Scan_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(ScanRequest)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
+func _TxnProxyService_Scan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
 	}
-	return srv.(TxnProxyServiceServer).Scan(m, &grpc.GenericServerStream[ScanRequest, ScanResponse]{ServerStream: stream})
+	if interceptor == nil {
+		return srv.(TxnProxyServiceServer).Scan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TxnProxyService_Scan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TxnProxyServiceServer).Scan(ctx, req.(*ScanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type TxnProxyService_ScanServer = grpc.ServerStreamingServer[ScanResponse]
 
 func _TxnProxyService_Commit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CommitRequest)
@@ -236,16 +234,14 @@ var TxnProxyService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _TxnProxyService_BatchGet_Handler,
 		},
 		{
+			MethodName: "Scan",
+			Handler:    _TxnProxyService_Scan_Handler,
+		},
+		{
 			MethodName: "Commit",
 			Handler:    _TxnProxyService_Commit_Handler,
 		},
 	},
-	Streams: []grpc.StreamDesc{
-		{
-			StreamName:    "Scan",
-			Handler:       _TxnProxyService_Scan_Handler,
-			ServerStreams: true,
-		},
-	},
+	Streams:  []grpc.StreamDesc{},
 	Metadata: "tkv_proxy.proto",
 }

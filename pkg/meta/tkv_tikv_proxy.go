@@ -22,11 +22,10 @@ package meta
 import (
 	"context"
 	"fmt"
-	"io"
 	"math"
-	"syscall"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pkg/errors"
@@ -37,6 +36,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
+var batchSize = DirBatchNum["kv"] + 1
 
 func init() {
 	Register("tikv-proxy", newKVMeta)
@@ -85,7 +85,6 @@ func (tx *tikvProxyTxn) get(key []byte) []byte {
 }
 
 func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
-	logger.Debugf("gets keys: %v, startTS: %d", keys, tx.startTS)
 	values := make([][]byte, len(keys))
 	remoteKeys := make([][]byte, 0, len(keys))
 
@@ -132,25 +131,15 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 }
 
 func (tx *tikvProxyTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v []byte) bool) {
-
 	logger.Debugf("scan begin: %s, end: %s, startTS: %d", string(begin), string(end), tx.startTS)
-	streamCtx, streamCancel := context.WithCancel(context.Background())
-	defer streamCancel()
-	stream, err := tx.client.Scan(streamCtx, &proxyv1.ScanRequest{
-		StartTs:  tx.startTS,
-		StartKey: begin,
-		EndKey:   end,
-		ScanSize: math.MaxInt32, // Default scan size
-	})
-	if err != nil {
-		panic(err)
-	}
-
+	skipFirst := false
 	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
+		resp, err := tx.client.Scan(context.TODO(), &proxyv1.ScanRequest{
+			StartTs:  tx.startTS,
+			StartKey: begin,
+			EndKey:   end,
+			ScanSize: int32(batchSize), // Default scan size
+		})
 		if err != nil {
 			panic(err)
 		}
@@ -158,16 +147,25 @@ func (tx *tikvProxyTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v
 			tx.startTS = resp.StartTs
 		}
 		for i, k := range resp.Keys {
+			if skipFirst {
+				skipFirst = false
+				continue
+			}
 			if !handler(k, resp.Values[i]) {
 				return
 			}
 		}
+		if resp.Eof {
+			break
+		}
+		begin = resp.Keys[len(resp.Keys)-1]
+		skipFirst = true
 	}
 }
 
 func (tx *tikvProxyTxn) exist(prefix []byte) bool {
-	logger.Debugf("exist prefix: %s, startTS: %d", string(prefix), tx.startTS)
-	stream, err := tx.client.Scan(context.TODO(), &proxyv1.ScanRequest{
+
+	resp, err := tx.client.Scan(context.TODO(), &proxyv1.ScanRequest{
 		StartTs:  tx.startTS,
 		StartKey: prefix,
 		EndKey:   nextKey(prefix),
@@ -176,27 +174,14 @@ func (tx *tikvProxyTxn) exist(prefix []byte) bool {
 	if err != nil {
 		panic(err)
 	}
-	resp, err := stream.Recv()
-	if err == io.EOF {
-		logger.Debugf("scan eof in exist, prefix: %s", string(prefix))
-		return false
-	}
-
-	if err != nil {
-		panic(err)
-	}
 
 	if tx.startTS == 0 {
 		tx.startTS = resp.StartTs
 	}
 
-	if resp != nil && len(resp.Keys) > 0 {
-		logger.Debugf("scan found in exist")
-		stream.CloseSend()
-		return true
+	if resp != nil {
+		return !resp.Eof
 	}
-
-	logger.Debugf("No key found in exist, prefix: %s", string(prefix))
 
 	return false
 }
@@ -344,28 +329,29 @@ func (c *tikvProxyClient) txn(f func(*kvTxn) error, retry int) (err error) {
 }
 
 func (c *tikvProxyClient) scan(prefix []byte, handler func(key, value []byte)) error {
-	startTS := uint64(time.Now().UnixNano())
-
-	stream, err := c.client.Scan(context.TODO(), &proxyv1.ScanRequest{
-		StartTs:  startTS,
-		StartKey: prefix,
-		EndKey:   nextKey(prefix),
-		ScanSize: 1000,
-	})
-	if err != nil {
-		return err
-	}
-
+	skipFirst := false
+	endKey := nextKey(prefix)
 	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
+		resp, err := c.client.Scan(context.TODO(), &proxyv1.ScanRequest{
+			StartTs:  math.MaxUint64,
+			StartKey: prefix,
+			EndKey:   endKey,
+			ScanSize: int32(batchSize), // Default scan size
+		})
 		if err != nil {
-			return err
+			panic(err)
 		}
 		for i, k := range resp.Keys {
+			if skipFirst {
+				skipFirst = false
+				continue
+			}
 			handler(k, resp.Values[i])
+		}
+		prefix = resp.Keys[len(resp.Keys)-1]
+		skipFirst = true
+		if resp.Eof {
+			break
 		}
 	}
 	return nil

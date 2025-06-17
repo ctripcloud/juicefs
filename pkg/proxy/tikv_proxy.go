@@ -22,9 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const (
-	batchSize = 4097
-)
+var batchSize = meta.DirBatchNum["kv"] + 1
 
 // TiKVProxy implements proxy for tikv with transaction management
 type TiKVProxy struct {
@@ -168,7 +166,6 @@ func (p *TiKVProxy) Get(ctx context.Context, req *proxyv1.GetRequest) (*proxyv1.
 // BatchGet implements TxnProxyServiceServer.BatchGet
 func (p *TiKVProxy) BatchGet(ctx context.Context, req *proxyv1.BatchGetRequest) (*proxyv1.BatchGetResponse, error) {
 	startTS := req.StartTs
-
 	var txn *tikv.KVTxn
 	var err error
 	if startTS != 0 {
@@ -207,100 +204,59 @@ func (p *TiKVProxy) BatchGet(ctx context.Context, req *proxyv1.BatchGetRequest) 
 }
 
 // Scan implements TxnProxyServiceServer.Scan
-func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyService_ScanServer) error {
+func (p *TiKVProxy) Scan(ctx context.Context, req *proxyv1.ScanRequest) (*proxyv1.ScanResponse, error) {
 	startTS := req.StartTs
 
 	var txn *tikv.KVTxn
 	var err error
+	scanSize := int(req.ScanSize)
+	if scanSize > batchSize {
+		// not allow to scan more than batchSize keys
+		// client will do for loop to scan the rest keys
+		scanSize = batchSize
+	}
+
 	if startTS != 0 {
 		txn, err = p.client.Begin(tikv.WithStartTS(startTS))
 		if err != nil {
-			return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
+			return nil, status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
 		}
 		if startTS == math.MaxUint64 {
 			txn.GetSnapshot().SetIsolationLevel(txnkv.RC) // RC isolation to skip lock checking in TiKV
+			if scanSize > 0 {
+				txn.GetSnapshot().SetScanBatchSize(scanSize)
+			}
+			txn.GetSnapshot().SetNotFillCache(true)
 		}
 	} else {
 		txn, err = p.client.Begin()
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
+		}
 	}
-	if err != nil {
-		return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
-	}
-	logger.Infof("start scan from %s to %s, startTS: %d", req.StartKey, req.EndKey, startTS)
 	iter, err := txn.Iter(req.StartKey, req.EndKey)
 	if err != nil {
-		return status.Errorf(codes.Internal, "failed to create iterator: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to create iterator: %v", err)
 	}
 	defer iter.Close()
 
-	scanSize := int(req.ScanSize)
-	scanCnt := 0
-	scanTotal := 0
 	keys := make([][]byte, 0)
 	values := make([][]byte, 0)
 
-	if scanSize == 0 {
-		if iter.Valid() {
-			// just for check the iterator is valid
-			stream.Send(&proxyv1.ScanResponse{
-				Keys:    [][]byte{[]byte("__exist__")},
-				Values:  [][]byte{[]byte("__exist__")},
-				StartTs: txn.StartTS(),
-			})
-		}
-		return nil // just for check the iterator is valid
-	}
-
-	for iter.Valid() && scanTotal < scanSize {
+	for iter.Valid() && len(keys) < scanSize {
 		key := iter.Key()
 		value := iter.Value()
 		keys = append(keys, key)
 		values = append(values, value)
-		scanCnt++
-		scanTotal++
-		if len(keys) >= batchSize {
-			logger.Infof("batch scan response: %d, %d, %d", scanTotal, scanSize, len(keys))
-			if err := stream.Send(&proxyv1.ScanResponse{
-				Keys:    keys,
-				Values:  values,
-				StartTs: txn.StartTS(),
-			}); err != nil {
-				// Client closed the stream, stop scanning immediately
-				if stream.Context().Err() != nil {
-					return nil
-				}
-				return err
-			}
-			keys = make([][]byte, 0)
-			values = make([][]byte, 0)
-			scanCnt = 0
-		}
-
-		// Check if client closed the stream by testing context cancellation
-		select {
-		case <-stream.Context().Done():
-			// Client closed the stream, stop scanning immediately
-			logger.Info("client closed the stream, stop scanning")
-			return nil
-		default:
-			// Continue scanning
-		}
-
 		iter.Next()
 	}
-	if scanCnt > 0 {
-		if err := stream.Send(&proxyv1.ScanResponse{
-			Keys:    keys,
-			Values:  values,
-			StartTs: txn.StartTS(),
-		}); err != nil {
-			// Client closed the stream
-			return err
-		}
-	}
-	logger.Infof("totoal scaned %s", scanTotal)
 
-	return nil
+	return &proxyv1.ScanResponse{
+		Keys:    keys,
+		Values:  values,
+		StartTs: txn.StartTS(),
+		Eof:     !iter.Valid(),
+	}, nil
 }
 
 // Commit implements TxnProxyServiceServer.Commit
