@@ -24,6 +24,7 @@ import (
 	"os/signal"
 	"path"
 	"syscall"
+	"time"
 
 	"github.com/juicedata/juicefs/pkg/proxy"
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
@@ -94,6 +95,20 @@ func tikvProxyAction(c *cli.Context) error {
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
+
+	go func() {
+		next := grpc_health_v1.HealthCheckResponse_SERVING
+		for {
+			err := tikvProxy.HealthCheck(context.Background())
+			if err != nil {
+				next = grpc_health_v1.HealthCheckResponse_NOT_SERVING
+			} else {
+				next = grpc_health_v1.HealthCheckResponse_SERVING
+			}
+			healthServer.SetServingStatus("", next)
+			time.Sleep(3 * time.Second)
+		}
+	}()
 
 	reflection.Register(grpcServer)
 
