@@ -88,7 +88,6 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 	logger.Debugf("gets keys: %v, startTS: %d", keys, tx.startTS)
 	values := make([][]byte, len(keys))
 	remoteKeys := make([][]byte, 0, len(keys))
-	remoteIndex := make(map[string]int)
 
 	// First, check local buffer buffer
 	for i, key := range keys {
@@ -103,7 +102,6 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 		}
 		// Key not found in local buffer, need to fetch from remote
 		remoteKeys = append(remoteKeys, key)
-		remoteIndex[string(key)] = i
 	}
 
 	// If we have keys to fetch from remote
@@ -117,8 +115,14 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 			panic(err)
 		}
 		for i, key := range resp.Keys {
-			values[remoteIndex[string(key)]] = resp.Values[i]
 			tx.reads[string(key)] = resp.Values[i]
+		}
+
+		for i, key := range keys {
+			value, ok := tx.reads[string(key)]
+			if ok {
+				values[i] = value
+			}
 		}
 		if tx.startTS == 0 {
 			tx.startTS = resp.StartTs

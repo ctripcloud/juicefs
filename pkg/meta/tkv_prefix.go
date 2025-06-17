@@ -116,5 +116,7 @@ func (tx *prefixTxn) rawDelete(key []byte) {
 }
 
 func (c *prefixClient) simpleTxn(f func(*kvTxn) error, retry int) (err error) {
-	return c.tkvClient.simpleTxn(f, retry)
+	return c.tkvClient.simpleTxn(func(tx *kvTxn) error {
+		return f(&kvTxn{&prefixTxn{tx, c.prefix}, retry})
+	}, retry)
 }

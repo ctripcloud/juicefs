@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	batchSize = 4096
+	batchSize = 4097
 )
 
 // TiKVProxy implements proxy for tikv with transaction management
@@ -106,6 +106,22 @@ func NewTiKVProxy(addr string) (*TiKVProxy, error) {
 	return proxy, nil
 }
 
+func (p *TiKVProxy) SetTestKey(ctx context.Context) error {
+	txn, err := p.client.Begin()
+	if err != nil {
+		return err
+	}
+	err = txn.Set([]byte("__test__"), []byte("__test__"))
+	if err != nil {
+		return err
+	}
+	if err := txn.Commit(ctx); err != nil {
+		return err
+	}
+	logger.Debugf("set test key: __test__")
+	return nil
+}
+
 func (p *TiKVProxy) Close() error {
 	return p.client.Close()
 }
@@ -141,6 +157,7 @@ func (p *TiKVProxy) Get(ctx context.Context, req *proxyv1.GetRequest) (*proxyv1.
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to get key: %v", err)
 	}
+	logger.Debugf("get key: %s, value: %s, startTS: %d", req.Key, value, txn.StartTS())
 
 	return &proxyv1.GetResponse{
 		StartTs: txn.StartTS(),
@@ -209,7 +226,7 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
 	}
-
+	logger.Infof("start scan from %s to %s, startTS: %d", req.StartKey, req.EndKey, startTS)
 	iter, err := txn.Iter(req.StartKey, req.EndKey)
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to create iterator: %v", err)
@@ -218,6 +235,7 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 
 	scanSize := int(req.ScanSize)
 	scanCnt := 0
+	scanTotal := 0
 	keys := make([][]byte, 0)
 	values := make([][]byte, 0)
 
@@ -233,19 +251,24 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 		return nil // just for check the iterator is valid
 	}
 
-	for iter.Valid() && scanCnt < scanSize {
+	for iter.Valid() && scanTotal < scanSize {
 		key := iter.Key()
 		value := iter.Value()
 		keys = append(keys, key)
 		values = append(values, value)
 		scanCnt++
-		if len(keys) >= scanSize {
+		scanTotal++
+		if len(keys) >= batchSize {
+			logger.Infof("batch scan response: %d, %d, %d", scanTotal, scanSize, len(keys))
 			if err := stream.Send(&proxyv1.ScanResponse{
 				Keys:    keys,
 				Values:  values,
 				StartTs: txn.StartTS(),
 			}); err != nil {
 				// Client closed the stream, stop scanning immediately
+				if stream.Context().Err() != nil {
+					return nil
+				}
 				return err
 			}
 			keys = make([][]byte, 0)
@@ -257,6 +280,7 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 		select {
 		case <-stream.Context().Done():
 			// Client closed the stream, stop scanning immediately
+			logger.Info("client closed the stream, stop scanning")
 			return nil
 		default:
 			// Continue scanning
@@ -274,6 +298,7 @@ func (p *TiKVProxy) Scan(req *proxyv1.ScanRequest, stream proxyv1.TxnProxyServic
 			return err
 		}
 	}
+	logger.Infof("totoal scaned %s", scanTotal)
 
 	return nil
 }
@@ -324,7 +349,6 @@ func (p *TiKVProxy) Commit(ctx context.Context, req *proxyv1.CommitRequest) (*pr
 	}
 
 	txn.SetEnable1PC(true)
-	txn.SetEnableAsyncCommit(true)
 
 	for i, k := range allKeys {
 		val := allValues[i]
