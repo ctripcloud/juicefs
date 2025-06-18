@@ -72,6 +72,7 @@ func Main(args []string) error {
 			cmdGateway(),
 			cmdWebDav(),
 			cmdTiKVProxy(),
+			cmdProxyDiscovery(),
 			cmdBench(),
 			cmdObjbench(),
 			cmdMdtest(),

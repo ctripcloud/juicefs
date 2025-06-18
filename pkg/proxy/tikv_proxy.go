@@ -27,18 +27,26 @@ import (
 var batchSize = meta.DirBatchNum["kv"] + 1
 
 const (
-	tikvProxySessionKeyPrefix = "__tikv_proxy_session__"
+	tikvProxySessionKeyPrefix    = "__tikv_proxy_session__/"
+	tikvProxySessionLastCleanKey = "__tikv_proxy_session_last_clean__"
+)
+
+var (
+	tikvProxySessionHeartbeatInterval = time.Second * 3
+	tikvProxySessionHeartbeatTimeout  = time.Second * 7
 )
 
 // TiKVProxy implements proxy for tikv with transaction management
 type TiKVProxy struct {
 	client *txnkv.Client
+	cancel context.CancelFunc
 	proxyv1.UnimplementedTxnProxyServiceServer
 }
 
 var logger = utils.GetLogger("juicefs")
 
-func NewTiKVProxy(addr string) (*TiKVProxy, error) {
+func NewTiKVProxy(addr string, proxyAddr string) (*TiKVProxy, error) {
+	logger.Infof("TiKV addr is %s", addr)
 	// default timeout is 1 second, it is dangerous for a large number of tikv clients
 	// please check the issue: https://git.dev.sh.ctripcorp.com/dre/issues/-/issues/1008
 	tikv.SetStoreLivenessTimeout(time.Second * 5)
@@ -87,167 +95,214 @@ func NewTiKVProxy(addr string) (*TiKVProxy, error) {
 		})
 	}
 
-	interval := time.Hour * 3
-	if dur, err := time.ParseDuration(query.Get("gc-interval")); err == nil {
-		if dur != 0 && dur < time.Hour {
-			logger.Warnf("TiKV gc-interval (%s) is too short, and is reset to 1h", dur)
-			dur = time.Hour
-		}
-		interval = dur
-	}
-	logger.Infof("TiKV gc interval is set to %s", interval)
-	logger.Infof("TiKV addr is %s", addr)
-
 	client, err := txnkv.NewClient(strings.Split(addr, ","))
 	if err != nil {
 		return nil, err
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	proxy := &TiKVProxy{
 		client: client,
+		cancel: cancel,
 	}
-
+	if proxyAddr != "" {
+		logger.Infof("proxy discovery is enabled, proxy addr is %s", proxyAddr)
+		go proxy.Register(ctx, proxyAddr)
+		go proxy.CleanExpiredProxies(ctx)
+	}
 	return proxy, nil
 }
 
 func (p *TiKVProxy) SetTestKey(ctx context.Context) error {
-	txn, err := p.client.Begin()
-	if err != nil {
-		return err
-	}
-	err = txn.Set([]byte("__ctrip_test__"), []byte("__test__"))
-	if err != nil {
-		return err
-	}
-	if err := txn.Commit(ctx); err != nil {
-		return err
-	}
-	logger.Debugf("set test key: __ctrip_test__")
-	return nil
+	_, err := p.Commit(ctx, &proxyv1.CommitRequest{
+		Keys:   [][]byte{[]byte("__ctrip_test__")},
+		Values: [][]byte{[]byte("__ctrip_test__")},
+	})
+	return err
 }
 
 func (p *TiKVProxy) HealthCheck(ctx context.Context) error {
-	txn, err := p.client.Begin()
+	_, err := p.Get(ctx, &proxyv1.GetRequest{
+		Key: []byte("__ctrip_test__"),
+	})
+	return err
+}
+
+	func retry(ctx context.Context, fn func() error, maxRetry int) error {
+	for {
+		err := fn()
+		if err == nil || !strings.Contains(err.Error(), "write conflict") {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if maxRetry > 0 {
+			maxRetry--
+		}
+	}
+}
+
+func (p *TiKVProxy) setIfSmall(ctx context.Context, key string, wantSet uint64, diff uint64) (bool, error) {
+	resp, err := p.Get(ctx, &proxyv1.GetRequest{
+		Key: []byte(key),
+	})
 	if err != nil {
-		return err
+		return false, err
 	}
-	value, err := txn.Get(ctx, []byte("__ctrip_test__"))
-	if tikverr.IsErrNotFound(err) {
-		return nil
+	startTS := resp.StartTs
+	var old uint64
+	if len(resp.Value) != 8 {
+		old = 0
+	} else {
+		old = binary.BigEndian.Uint64(resp.Value)
 	}
-	if err != nil {
-		return err
+	logger.Infof("setIfSmall, key: %s, old: %d, wantSet: %d, diff: %d", key, old, wantSet, diff)
+	if old < wantSet && wantSet-old > diff {
+		ts := make([]byte, 8)
+		binary.BigEndian.PutUint64(ts, wantSet)
+		_, err := p.Commit(ctx, &proxyv1.CommitRequest{
+			StartTs: startTS,
+			Keys:    [][]byte{[]byte(key)},
+			Values:  [][]byte{ts},
+		})
+		return true, err
 	}
-	logger.Debugf("get test key: __ctrip_test__, value: %s", value)
-	return nil
+	return false, nil
 }
 
 func (p *TiKVProxy) Register(ctx context.Context, proxyAddr string) error {
-	retry := func(ctx context.Context, fn func() error, maxRetry int) error {
-		for {
-			err := fn()
-			if err == nil {
-				return nil
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			if maxRetry > 0 {
-				maxRetry--
-			}
+	timer := time.NewTicker(tikvProxySessionHeartbeatInterval)
+	setActiveTime := func() error {
+		currentTime := uint64(time.Now().Unix())
+		sessionKey := fmt.Sprintf("%s%s", tikvProxySessionKeyPrefix, proxyAddr)
+		commitCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		defer cancel()
+		ts := make([]byte, 8)
+		binary.BigEndian.PutUint64(ts, currentTime)
+		_, err := p.Commit(commitCtx, &proxyv1.CommitRequest{
+			Keys:   [][]byte{[]byte(sessionKey)},
+			Values: [][]byte{ts},
+		})
+		if err != nil {
+			return err
+		}
+		logger.Infof("set active time for proxy %s, current time is %d", proxyAddr, currentTime)
+		return nil
+	}
+	retry(ctx, setActiveTime, 5)
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Infof("register context done")
+			return ctx.Err()
+		case <-timer.C:
+			retry(ctx, setActiveTime, 5)
 		}
 	}
-
-	go func() {
-		timer := time.NewTicker(time.Second * 3)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-timer.C:
-				setActiveTime := func() error {
-					currentTime := int64(time.Now().Unix())
-					sessionKey := fmt.Sprintf("%s/%s", tikvProxySessionKeyPrefix, proxyAddr)
-					commitCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-					defer cancel()
-					ts := make([]byte, 8)
-					binary.BigEndian.PutUint64(ts, uint64(currentTime))
-					_, err := p.Commit(commitCtx, &proxyv1.CommitRequest{
-						Keys:   [][]byte{[]byte(sessionKey)},
-						Values: [][]byte{ts},
-					})
-					if err != nil {
-						return err
-					}
-					return nil
-				}
-				retry(ctx, setActiveTime, 5)
-			}
-		}
-	}()
-	return nil
 }
 
 func (p *TiKVProxy) Unregister(ctx context.Context, proxyAddr string) error {
-	txn, err := p.client.Begin()
-	if err != nil {
-		return err
-	}
-	err = txn.Delete([]byte(fmt.Sprintf("%s/%s", tikvProxySessionKeyPrefix, proxyAddr)))
-	if err != nil {
-		return err
-	}
-	return txn.Commit(ctx)
+	_, err := p.Commit(ctx, &proxyv1.CommitRequest{
+		Keys:   [][]byte{[]byte(fmt.Sprintf("%s%s", tikvProxySessionKeyPrefix, proxyAddr))},
+		Values: [][]byte{{}},
+	})
+	return err
 }
 
-func (p *TiKVProxy) GetAllProxies(ctx context.Context) (map[string]uint64, error) {
+func nextKey(key []byte) []byte {
+	if len(key) == 0 {
+		return nil
+	}
+	next := make([]byte, len(key))
+	copy(next, key)
+	p := len(next) - 1
+	for {
+		next[p]++
+		if next[p] != 0 {
+			break
+		}
+		p--
+		if p < 0 {
+			panic("can't scan keys for 0xFF")
+		}
+	}
+	return next
+}
+
+func (p *TiKVProxy) GetAllProxies(ctx context.Context) (map[string]uint64, uint64, error) {
+	logger.Debugf("get all proxies start")
 	proxies := make(map[string]uint64)
 	prefix := []byte(tikvProxySessionKeyPrefix)
-	end := make([]byte, len(prefix))
-	end[len(end)-1]++
+	end := nextKey(prefix)
 	resp, err := p.Scan(ctx, &proxyv1.ScanRequest{
-		StartTs:  math.MaxUint64,
 		StartKey: prefix,
 		EndKey:   end,
+		ScanSize: math.MaxInt32,
 	})
+	logger.Debugf("get all proxies, startKey: %s, endKey: %s, resp: %v", string(prefix), string(end), resp)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	for i, k := range resp.Keys {
-		if len(resp.Values[i]) != 8 {
+		if len(resp.Values[i]) != 8 || len(k) <= len(prefix) {
+			logger.Debugf("get all proxies, key: %s, value: %s, length: %d, prefix: %s", k, resp.Values[i], len(resp.Values[i]), prefix)
 			continue
 		}
-	for iter.Valid() {
-		if len(iter.Value()) != 8 {
-			iter.Next()
-			continue
-		}
-		proxies[string(iter.Key())] = binary.BigEndian.Uint64(iter.Value())
-		iter.Next()
+		k = k[len(prefix):]
+		proxies[string(k)] = binary.BigEndian.Uint64(resp.Values[i])
 	}
-	return proxies, nil
+	logger.Debugf("get all proxies end, proxies: %v, startTS: %d", proxies, resp.StartTs)
+	return proxies, resp.StartTs, nil
 }
 
-func (p *TiKVProxy) CleanExpiredProxies(ctx context.Context, expiredTime uint64) error {
-	proxies, err := p.GetAllProxies(ctx)
-	if err != nil {
-		return err
-	}
-	for proxy, activeTime := range proxies {
-		if activeTime < expiredTime {
-			err = p.Unregister(ctx, proxy)
-			if err != nil {
-				continue
-			}
+func (p *TiKVProxy) CleanExpiredProxies(ctx context.Context) error {
+	timer := time.NewTicker(time.Second * 10)
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Infof("clean expired proxies context done")
+			return ctx.Err()
+		case <-timer.C:
+			retry(ctx, func() error {
+				now := uint64(time.Now().Unix())
+				ok, err := p.setIfSmall(ctx, tikvProxySessionLastCleanKey, now, 15)
+				if err != nil {
+					return err
+				}
+				logger.Infof("clean expired proxies, now is %d, ok is %v", now, ok)
+				if !ok {
+					return nil
+				}
+				proxies, startTS, err := p.GetAllProxies(ctx)
+				if err != nil {
+					return err
+				}
+				needClean := make([][]byte, 0)
+				for proxy, activeTime := range proxies {
+					if activeTime < now-uint64(9*tikvProxySessionHeartbeatTimeout.Seconds()/10) {
+						logger.Infof("clean expired proxy %s, active time is %d, now is %d", proxy, activeTime, now)
+						needClean = append(needClean, []byte(fmt.Sprintf("%s%s", tikvProxySessionKeyPrefix, proxy)))
+					}
+				}
+				p.Commit(ctx, &proxyv1.CommitRequest{
+					StartTs: startTS,
+					Keys:    needClean,
+					Values:  make([][]byte, len(needClean)),
+				})
+				return nil
+			}, 5)
 		}
 	}
-	return nil
 }
 
 func (p *TiKVProxy) Close() error {
+	if p.cancel != nil {
+		p.cancel()
+	}
 	return p.client.Close()
 }
 
@@ -436,8 +491,10 @@ func (p *TiKVProxy) Commit(ctx context.Context, req *proxyv1.CommitRequest) (*pr
 	for i, k := range allKeys {
 		val := allValues[i]
 		if len(val) == 0 {
+			logger.Debugf("commit delete key: %s", string(k))
 			err = txn.Delete(k)
 		} else {
+			logger.Debugf("commit set key: %s, value: %s", string(k), string(val))
 			err = txn.Set(k, val)
 		}
 		if err != nil {

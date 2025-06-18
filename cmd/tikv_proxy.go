@@ -79,7 +79,7 @@ func tikvProxyAction(c *cli.Context) error {
 	listenAddr := c.Args().Get(1)
 
 	// Create TiKV proxy
-	tikvProxy, err := proxy.NewTiKVProxy(tikvAddresses)
+	tikvProxy, err := proxy.NewTiKVProxy(tikvAddresses, listenAddr)
 	if err != nil {
 		logger.Fatalf("Failed to create TiKV proxy: %v", err)
 	}
