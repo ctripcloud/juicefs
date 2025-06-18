@@ -464,13 +464,7 @@ func (p *TiKVProxy) Commit(ctx context.Context, req *proxyv1.CommitRequest) (*pr
 	}
 
 	if len(allValues) == 0 {
-		// TiKV disallows empty transactions, but we can treat this as a successful no-op.
-		// A read-only transaction might not have a valid commit_ts, so we can't create one.
-		// However, the client expects a response.
-		// A better approach might be to define what an empty commit means.
-		// For now, we return an empty response, but the client needs to handle it.
-		// A real commit_ts is needed, so we must perform a transaction.
-		// Let's create a transaction and commit it to get a valid commitTS.
+		// empty transaction is not allowed
 		logger.Warnf("committing an empty transaction for start_ts: %d", startTS)
 		return nil, status.Errorf(codes.InvalidArgument, "committing an empty transaction for start_ts: %d", startTS)
 	}

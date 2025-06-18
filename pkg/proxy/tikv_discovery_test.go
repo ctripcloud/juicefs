@@ -17,15 +17,15 @@ import (
 // specified in `FatTiKVAddr`.
 func TestProxyDiscovery_Integration(t *testing.T) {
 
-	
+
+
 	// start a tikv proxy in localhost:8079
 	tikvProxy1, err := NewTiKVProxy(FatTiKVAddr, "localhost:8079")
 	require.NoError(t, err)
 
 	// start a tikv proxy in localhost:8080
-	tikvProxy2, err := NewTiKVProxy(FatTiKVAddr, "localhost:8080")
+	_, err = NewTiKVProxy(FatTiKVAddr, "localhost:8080")
 	require.NoError(t, err)
-	defer tikvProxy2.Close()
 
 	// Create a discovery service instance, which will also register itself as a proxy
 	// at localhost:8081.
@@ -35,7 +35,6 @@ func TestProxyDiscovery_Integration(t *testing.T) {
 	go discoveryService.Serve()
 	require.NoError(t, err, "Failed to create primary discovery service")
 	require.NotNil(t, discoveryService)
-	defer discoveryService.Close()
 
 	// Create a second proxy instance to be discovered. It will register at localhost:8082.
 	// We only need it for its registration side-effect.
@@ -111,7 +110,7 @@ func TestProxyDiscovery_Integration(t *testing.T) {
 		require.NoError(t, err)
 
 		// wait for 20 seconds
-		time.Sleep(20 * time.Second)
+		time.Sleep(10 * time.Second)
 
 		discoveryResp, err = http.Get("http://localhost:8081/discovery")
 		require.NoError(t, err)
@@ -129,6 +128,17 @@ func TestProxyDiscovery_Integration(t *testing.T) {
 			assert.NotContains(t, discoveredProxies2, proxy, "Should not discover inactive proxies")
 		}
 		t.Logf("Successfully discovered proxies: %v", discoveredProxies)
+	})
+	// shutdown discovery service
+	t.Log("shutdown discovery service")
+	discoveryService.Shutdown()
+
+	t.Run("ProxyDiscoveryAfterDiscoveryServiceIsShutdown", func(t *testing.T) {
+		// not healthy
+		healthResp, err := http.Get("http://localhost:8081/health")
+		require.NoError(t, err)
+		defer healthResp.Body.Close()
+		assert.Equal(t, http.StatusServiceUnavailable, healthResp.StatusCode, "Health check should be unhealthy")
 	})
 
 }
