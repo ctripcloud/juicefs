@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
 )
 
@@ -18,6 +19,24 @@ var (
 func TestInterfaceCompliance(t *testing.T) {
 	var _ proxyv1.TxnProxyServiceServer = (*TiKVProxy)(nil)
 }
+
+func TestTiKVProxyCreate(t *testing.T) {
+	tikvProxy, err := NewTiKVProxy(FatTiKVAddr, FatProxyAddr)
+	if err != nil {
+		t.Fatalf("create tikv proxy failed: %v", err)
+	}
+	txn, err := tikvProxy.client.Begin()
+	if err != nil {
+		t.Fatalf("begin txn failed: %v", err)
+	}
+	startTS := txn.StartTS()
+	assert.NotZero(t, startTS)
+	clusterID := tikvProxy.client.GetClusterID()
+	t.Logf("clusterID: %d", clusterID)
+	assert.NotZero(t, clusterID)
+	tikvProxy.Close()
+}
+
 
 func TestGetAllProxies(t *testing.T) {
 	tikvProxy, _ := NewTiKVProxy(FatTiKVAddr, FatProxyAddr)
