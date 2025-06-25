@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"path"
 
 	"github.com/juicedata/juicefs/pkg/proxy"
@@ -30,41 +31,45 @@ func cmdProxyDiscovery() *cli.Command {
 		Action:    proxyDiscoveryAction,
 		Category:  "SERVICE",
 		Usage:     "Start a proxy discovery server",
-		ArgsUsage: "TIKV-ADDRESS PROXY-ADDRESS",
+		ArgsUsage: "TIKV-ADDRESS",
 		Description: `
 Start an HTTP server that provides discovery service for TiKV proxies.
 The server accepts HTTP requests and returns active proxy addresses.
 
 TIKV-ADDRESS is the address of TiKV cluster (e.g., 127.0.0.1:2379).
-PROXY-ADDRESS is the address of this proxy instance.
 
 Examples:
 $ juicefs proxy-discovery 127.0.0.1:2379 127.0.0.1:8080 --ip 127.0.0.1 --port 8081
-$ juicefs proxy-discovery 127.0.0.1:2379,127.0.0.1:2380 127.0.0.1:8080 --ip 0.0.0.0 --port 8081`,
+$ juicefs proxy-discovery 127.0.0.1:2379,127.0.0.1:2380 127.0.0.1:8080 --port 8081`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "log",
 				Usage: "path for discovery log",
 				Value: path.Join(getDefaultLogDir(), "juicefs-proxy-discovery.log"),
 			},
-			&cli.BoolFlag{
-				Name:    "background",
-				Aliases: []string{"d"},
-				Usage:   "run in background",
+			&cli.StringFlag{
+				Name:  "port",
+				Usage: "port to listen on",
+				Value: "8080",
 			},
 		},
 	}
 }
 
 func proxyDiscoveryAction(c *cli.Context) error {
-	setup(c, 2)
+	setup(c, 1)
 
-	if c.NArg() != 2 {
+	if c.NArg() != 1 {
 		return cli.ShowCommandHelp(c, "proxy-discovery")
 	}
 
 	tikvAddr := c.Args().Get(0)
-	listenAddr := c.Args().Get(1)
+	proxyPort := c.String("port")
+	localIP, err := getLocalIP()
+	if err != nil {
+		logger.Fatalf("Failed to get local IP: %v", err)
+	}
+	listenAddr := fmt.Sprintf("%s:%s", localIP, proxyPort)
 
 	// Create proxy discovery service
 	ctx, cancel := context.WithCancel(context.Background())

@@ -36,8 +36,9 @@ import (
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/resolver"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -47,9 +48,9 @@ const (
 	DefGrpcInitialConnWindowSize  = 1 << 27 // 128MiB
 	DefMaxConcurrencyRequestLimit = math.MaxInt64
 
-	dialTimeout       = 5 * time.Second
-	keepAlive         = 10 * time.Second
-	keepAliveTimeout  = 3 * time.Second
+	dialTimeout      = 5 * time.Second
+	keepAlive        = 10 * time.Second
+	keepAliveTimeout = 3 * time.Second
 )
 
 var batchSize = DirBatchNum["kv"] + 1
@@ -294,13 +295,39 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 			"loadBalancingPolicy": "round_robin",
 			"healthCheckConfig": {
 				"serviceName": ""
-			}
+			},
+			"methodConfig": [{
+				"name": [{"service": ""}],
+				"waitForReady": true,
+				"retryPolicy": {
+					"maxAttempts": 5,
+					"initialBackoff": "0.1s",
+					"maxBackoff": "3s",
+					"backoffMultiplier": 1.6,
+					"retryableStatusCodes": ["UNAVAILABLE", "DEADLINE_EXCEEDED", "ABORTED", "INTERNAL"]
+				}
+			}]
 		}`),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}
+	var conn *grpc.ClientConn
+	logger.Infof("tUrl.Path: %s, tUrl.Host: %s", tUrl.Path, tUrl.Host)
 
-	// Connect to the TiKV Proxy gRPC server
-	conn, err := grpc.NewClient(tUrl.Host, opts...)
+	if tUrl.Path != "/discovery" && tUrl.Path != "discovery" {
+		conn, err = grpc.NewClient(tUrl.Host, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to TiKV Proxy at %s: %v", tUrl.Host, err)
+		}
+	} else {
+		r := NewServiceDiscovery()
+		resolver.Register(r)
+		target := fmt.Sprintf("%s://%s", DiscoveryScheme, tUrl.Host)
+		conn, err = grpc.NewClient(target, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to TiKV Proxy at %s: %v", tUrl.Host, err)
+		}
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to TiKV Proxy at %s: %v", tUrl.Host, err)
 	}
@@ -334,8 +361,22 @@ func (c *tikvProxyClient) name() string {
 }
 
 func (c *tikvProxyClient) shouldRetry(err error) bool {
-	// For gRPC errors, we can retry on certain conditions
-	return strings.Contains(err.Error(), "write conflict") || strings.Contains(err.Error(), "TxnLockNotFound")
+	// Check for specific error strings
+	if strings.Contains(err.Error(), "write conflict") || strings.Contains(err.Error(), "TxnLockNotFound") {
+		return true
+	}
+
+	// Check gRPC status codes
+	if st, ok := status.FromError(err); ok {
+		switch st.Code() {
+		case codes.Unavailable, // Server is currently unavailable
+			codes.Internal,          // Internal errors
+			codes.ResourceExhausted, // Flow control or resource limits
+			codes.DeadlineExceeded:  // Request deadline exceeded
+			return true
+		}
+	}
+	return false
 }
 
 func (c *tikvProxyClient) txn(f func(*kvTxn) error, retry int) (err error) {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -14,16 +15,24 @@ import (
 
 type tProxy interface {
 	GetAllProxies(ctx context.Context) (map[string]uint64, uint64, error)
+	GetClusterID() uint64
 	HealthCheck(ctx context.Context) error
 	Close() error
 }
 
+type proxyResponse struct {
+	Proxy   string `json:"proxy"`
+	ClusterID uint64 `json:"cluster_id"`
+	StartTS   uint64 `json:"start_ts"`
+}
+
 type ProxyDiscovery struct {
-	tikvProxy  tProxy
-	proxyCache []string // active proxy addresses
-	logger     *logrus.Entry
-	proxyAddr  string
-	ctx        context.Context
+	tikvProxy    tProxy
+	proxyCache   []proxyResponse // active proxy addresses
+	logger       *logrus.Entry
+	proxyAddr    string
+	ctx          context.Context
+	shutdownOnce sync.Once
 }
 
 func NewProxyDiscovery(ctx context.Context, addr string, proxyAddr string) (*ProxyDiscovery, error) {
@@ -32,11 +41,12 @@ func NewProxyDiscovery(ctx context.Context, addr string, proxyAddr string) (*Pro
 		return nil, err
 	}
 
+	logger.Infof("NewProxyDiscovery, addr: %s, proxyAddr: %s", addr, proxyAddr)
 	pd := &ProxyDiscovery{
 		tikvProxy:  tikvProxy,
-		proxyCache: make([]string, 0),
-		logger:     logger.WithField("component", "proxy-discovery"),
+		proxyCache: make([]proxyResponse, 0),
 		proxyAddr:  proxyAddr,
+		logger:     logger.WithField("component", "proxy-discovery"),
 		ctx:        ctx,
 	}
 
@@ -79,7 +89,13 @@ func (pd *ProxyDiscovery) Serve() error {
 }
 
 func (pd *ProxyDiscovery) Shutdown() error {
-	return pd.tikvProxy.Close()
+	var err error
+	pd.shutdownOnce.Do(func() {
+		if pd.tikvProxy != nil {
+			err = pd.tikvProxy.Close()
+		}
+	})
+	return err
 }
 
 func (pd *ProxyDiscovery) updateProxies() {
@@ -87,32 +103,34 @@ func (pd *ProxyDiscovery) updateProxies() {
 	defer ticker.Stop()
 
 	f := func() {
-		proxies, _, err := pd.tikvProxy.GetAllProxies(pd.ctx)
+		proxies, startTS, err := pd.tikvProxy.GetAllProxies(pd.ctx)
 		if err != nil {
 			pd.logger.Errorf("Failed to get proxies: %v", err)
 		}
 
 		now := uint64(time.Now().Unix())
-		activeProxies := make([]string, 0)
+		activeProxies := make([]proxyResponse, 0)
 
 		// Only keep active proxies
 		for proxy, activeTime := range proxies {
-			logger.Infof("proxy %s is active, active time is %d, now is %d", proxy, activeTime, now)
+			logger.Debugf("proxy %s active time is %d, now is %d", proxy, activeTime, now)
 			if activeTime >= now-uint64(tikvProxySessionHeartbeatTimeout.Seconds()) {
-				activeProxies = append(activeProxies, proxy)
-				logger.Infof("proxy %s is active", proxy)
+				activeProxies = append(activeProxies, proxyResponse{
+					Proxy:     proxy,
+					ClusterID: pd.tikvProxy.GetClusterID(),
+					StartTS:   startTS,
+				})
+				logger.Debugf("proxy %s is active", proxy)
 			}
 		}
 		pd.proxyCache = activeProxies
-		logger.Infof("update proxies, active proxies: %v", activeProxies)
+		logger.Debugf("update proxies, active proxies: %v", activeProxies)
 	}
 
-	f()
 	for {
+		f()
 		select {
 		case <-ticker.C:
-			logger.Infof("update proxies ticker")
-			f()
 		case <-pd.ctx.Done():
 			logger.Infof("update proxies context done")
 			return
@@ -149,5 +167,11 @@ func (pd *ProxyDiscovery) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (pd *ProxyDiscovery) Close() error {
-	return pd.tikvProxy.Close()
+	var err error
+	pd.shutdownOnce.Do(func() {
+		if pd.tikvProxy != nil {
+			err = pd.tikvProxy.Close()
+		}
+	})
+	return err
 }

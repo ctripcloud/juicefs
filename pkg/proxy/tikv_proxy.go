@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	meta "github.com/juicedata/juicefs/pkg/meta"
@@ -33,20 +34,24 @@ const (
 
 var (
 	tikvProxySessionHeartbeatInterval = time.Second * 3
-	tikvProxySessionHeartbeatTimeout  = time.Second * 7
+	tikvProxySessionHeartbeatTimeout  = time.Second * 10
 )
 
 // TiKVProxy implements proxy for tikv with transaction management
 type TiKVProxy struct {
-	client *txnkv.Client
-	cancel context.CancelFunc
+	client    *txnkv.Client
+	cancel    context.CancelFunc
+	clusterID uint64
+	closeOnce sync.Once
+	closed    bool
+	mu        sync.RWMutex
 	proxyv1.UnimplementedTxnProxyServiceServer
 }
 
 var logger = utils.GetLogger("juicefs")
 
 func NewTiKVProxy(addr string, proxyAddr string) (*TiKVProxy, error) {
-	logger.Infof("TiKV addr is %s", addr)
+	logger.Infof("NewTiKVProxy, addr: %s, proxyAddr: %s", addr, proxyAddr)
 	// default timeout is 1 second, it is dangerous for a large number of tikv clients
 	// please check the issue: https://git.dev.sh.ctripcorp.com/dre/issues/-/issues/1008
 	tikv.SetStoreLivenessTimeout(time.Second * 5)
@@ -102,8 +107,9 @@ func NewTiKVProxy(addr string, proxyAddr string) (*TiKVProxy, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	proxy := &TiKVProxy{
-		client: client,
-		cancel: cancel,
+		client:    client,
+		cancel:    cancel,
+		clusterID: client.GetClusterID(),
 	}
 	if proxyAddr != "" {
 		logger.Infof("proxy discovery is enabled, proxy addr is %s", proxyAddr)
@@ -111,6 +117,10 @@ func NewTiKVProxy(addr string, proxyAddr string) (*TiKVProxy, error) {
 		go proxy.CleanExpiredProxies(ctx)
 	}
 	return proxy, nil
+}
+
+func (p *TiKVProxy) GetClusterID() uint64 {
+	return p.clusterID
 }
 
 func (p *TiKVProxy) SetTestKey(ctx context.Context) error {
@@ -128,7 +138,7 @@ func (p *TiKVProxy) HealthCheck(ctx context.Context) error {
 	return err
 }
 
-	func retry(ctx context.Context, fn func() error, maxRetry int) error {
+func retry(ctx context.Context, fn func() error, maxRetry int) error {
 	for {
 		err := fn()
 		if err == nil || !strings.Contains(err.Error(), "write conflict") {
@@ -159,7 +169,7 @@ func (p *TiKVProxy) setIfSmall(ctx context.Context, key string, wantSet uint64, 
 	} else {
 		old = binary.BigEndian.Uint64(resp.Value)
 	}
-	logger.Infof("setIfSmall, key: %s, old: %d, wantSet: %d, diff: %d", key, old, wantSet, diff)
+	logger.Debugf("setIfSmall, key: %s, old: %d, wantSet: %d, diff: %d", key, old, wantSet, diff)
 	if old < wantSet && wantSet-old > diff {
 		ts := make([]byte, 8)
 		binary.BigEndian.PutUint64(ts, wantSet)
@@ -168,7 +178,7 @@ func (p *TiKVProxy) setIfSmall(ctx context.Context, key string, wantSet uint64, 
 			Keys:    [][]byte{[]byte(key)},
 			Values:  [][]byte{ts},
 		})
-		return true, err
+		return err == nil, err
 	}
 	return false, nil
 }
@@ -189,17 +199,16 @@ func (p *TiKVProxy) Register(ctx context.Context, proxyAddr string) error {
 		if err != nil {
 			return err
 		}
-		logger.Infof("set active time for proxy %s, current time is %d", proxyAddr, currentTime)
+		logger.Debugf("set active time for proxy %s, current time is %d", proxyAddr, currentTime)
 		return nil
 	}
-	retry(ctx, setActiveTime, 5)
 	for {
+		retry(ctx, setActiveTime, 5)
 		select {
 		case <-ctx.Done():
 			logger.Infof("register context done")
 			return ctx.Err()
 		case <-timer.C:
-			retry(ctx, setActiveTime, 5)
 		}
 	}
 }
@@ -273,7 +282,7 @@ func (p *TiKVProxy) CleanExpiredProxies(ctx context.Context) error {
 				if err != nil {
 					return err
 				}
-				logger.Infof("clean expired proxies, now is %d, ok is %v", now, ok)
+				logger.Debugf("starting to clean expired proxies, now is %d, ok is %v", now, ok)
 				if !ok {
 					return nil
 				}
@@ -284,15 +293,17 @@ func (p *TiKVProxy) CleanExpiredProxies(ctx context.Context) error {
 				needClean := make([][]byte, 0)
 				for proxy, activeTime := range proxies {
 					if activeTime < now-uint64(9*tikvProxySessionHeartbeatTimeout.Seconds()/10) {
-						logger.Infof("clean expired proxy %s, active time is %d, now is %d", proxy, activeTime, now)
+						logger.Debugf("clean expired proxy %s, active time is %d, now is %d", proxy, activeTime, now)
 						needClean = append(needClean, []byte(fmt.Sprintf("%s%s", tikvProxySessionKeyPrefix, proxy)))
 					}
 				}
-				p.Commit(ctx, &proxyv1.CommitRequest{
-					StartTs: startTS,
-					Keys:    needClean,
-					Values:  make([][]byte, len(needClean)),
-				})
+				if len(needClean) != 0 {
+					p.Commit(ctx, &proxyv1.CommitRequest{
+						StartTs: startTS,
+						Keys:    needClean,
+						Values:  make([][]byte, len(needClean)),
+					})
+				}
 				return nil
 			}, 5)
 		}
@@ -300,10 +311,26 @@ func (p *TiKVProxy) CleanExpiredProxies(ctx context.Context) error {
 }
 
 func (p *TiKVProxy) Close() error {
-	if p.cancel != nil {
-		p.cancel()
-	}
-	return p.client.Close()
+	var err error
+	p.closeOnce.Do(func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		if p.closed {
+			return
+		}
+
+		if p.cancel != nil {
+			p.cancel()
+		}
+
+		if p.client != nil {
+			err = p.client.Close()
+		}
+
+		p.closed = true
+	})
+	return err
 }
 
 // Get implements TxnProxyServiceServer.Get
@@ -398,6 +425,9 @@ func (p *TiKVProxy) Scan(ctx context.Context, req *proxyv1.ScanRequest) (*proxyv
 		scanSize = batchSize
 	}
 
+	if req.StartKey == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "start key is nil")
+	}
 	if startTS != 0 {
 		txn, err = p.client.Begin(tikv.WithStartTS(startTS))
 		if err != nil {
@@ -505,7 +535,7 @@ func (p *TiKVProxy) Commit(ctx context.Context, req *proxyv1.CommitRequest) (*pr
 
 	if err := txn.Commit(commitCtx); err != nil {
 		logger.Errorf("failed to commit transaction for start_ts %d: %v", startTS, err)
-		return nil, status.Errorf(codes.Internal, "failed to commit transaction for start_ts %d: %v", txn.StartTS(), err)
+		return nil, status.Errorf(codes.AlreadyExists, "failed to commit transaction for start_ts %d: %v", txn.StartTS(), err)
 	}
 
 	return &proxyv1.CommitResponse{
