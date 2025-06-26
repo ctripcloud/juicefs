@@ -50,7 +50,7 @@ const (
 
 	dialTimeout      = 5 * time.Second
 	keepAlive        = 10 * time.Second
-	keepAliveTimeout = 3 * time.Second
+	keepAliveTimeout = time.Second
 )
 
 var batchSize = DirBatchNum["kv"] + 1
@@ -290,6 +290,7 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:    keepAlive,
 			Timeout: keepAliveTimeout,
+			PermitWithoutStream: true,             // send pings even without active streams
 		}),
 		grpc.WithDefaultServiceConfig(`{
 			"loadBalancingPolicy": "round_robin",
@@ -313,7 +314,9 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 	var conn *grpc.ClientConn
 	logger.Infof("tUrl.Path: %s, tUrl.Host: %s", tUrl.Path, tUrl.Host)
 
-	if tUrl.Path != "/discovery" && tUrl.Path != "discovery" {
+	params := tUrl.Query()
+	discovery, ok := params["discovery"]
+	if !ok || discovery[0] != "true" {
 		conn, err = grpc.NewClient(tUrl.Host, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to TiKV Proxy at %s: %v", tUrl.Host, err)

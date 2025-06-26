@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"net"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/grpc/keepalive"
 	"github.com/juicedata/juicefs/pkg/proxy"
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
 	"github.com/urfave/cli/v2"
@@ -41,16 +43,15 @@ func cmdTiKVProxy() *cli.Command {
 		Action:    tikvProxyAction,
 		Category:  "SERVICE",
 		Usage:     "Start a TiKV transaction proxy server",
-		ArgsUsage: "LISTEN-ADDRESS",
+		ArgsUsage: "TIKV-ADDRESS",
 		Description: `
 Start a gRPC server that provides a stateless proxy for TiKV transactions.
 The proxy accepts transaction operations via gRPC and forwards them to TiKV cluster.
 
-LISTEN-ADDRESS is the address where the gRPC server will listen (e.g., :8080).
+TIKV-ADDRESS is the address of the TiKV cluster (e.g., 127.0.0.1:2379).
 
 Examples:
-$ juicefs tikv-proxy --tikv 127.0.0.1:2379 :8080
-$ juicefs tikv-proxy --tikv 127.0.0.1:2379,127.0.0.1:2380,127.0.0.1:2381 0.0.0.0:8080
+$ juicefs tikv-proxy 127.0.0.1:2379 --port 8080
 
 Details: https://juicefs.com/docs/community/tikv_proxy`,
 		Flags: []cli.Flag{
@@ -64,19 +65,29 @@ Details: https://juicefs.com/docs/community/tikv_proxy`,
 				Aliases: []string{"d"},
 				Usage:   "run in background",
 			},
+			&cli.StringFlag{
+				Name:  "port",
+				Usage: "port to listen on",
+				Value: "8080",
+			},
 		},
 	}
 }
 
 func tikvProxyAction(c *cli.Context) error {
-	setup(c, 2)
+	setup(c, 1)
 
-	if c.NArg() != 2 {
+	if c.NArg() != 1 {
 		return cli.ShowCommandHelp(c, "tikv-proxy")
 	}
 
 	tikvAddresses := c.Args().Get(0)
-	listenAddr := c.Args().Get(1)
+	proxyPort := c.String("port")
+	localIP, err := getLocalIP()
+	if err != nil {
+		logger.Fatalf("Failed to get local IP: %v", err)
+	}
+	listenAddr := fmt.Sprintf("%s:%s", localIP, proxyPort)
 
 	// Create TiKV proxy
 	tikvProxy, err := proxy.NewTiKVProxy(tikvAddresses, listenAddr)
@@ -84,11 +95,25 @@ func tikvProxyAction(c *cli.Context) error {
 		logger.Fatalf("Failed to create TiKV proxy: %v", err)
 	}
 	defer tikvProxy.Close()
+	var kaep = keepalive.EnforcementPolicy{
+		MinTime:             5 * time.Second, // If a client pings more than once every 5 seconds, terminate the connection
+		PermitWithoutStream: true,            // Allow pings even when there are no active streams
+	}
+	
+	var kasp = keepalive.ServerParameters{
+		MaxConnectionIdle:     15 * time.Second, // If a client is idle for 15 seconds, send a GOAWAY
+		MaxConnectionAge:      30 * time.Second, // If any connection is alive for more than 30 seconds, send a GOAWAY
+		MaxConnectionAgeGrace: 5 * time.Second,  // Allow 5 seconds for pending RPCs to complete before forcibly closing connections
+		Time:                  5 * time.Second,  // Ping the client if it is idle for 5 seconds to ensure the connection is still active
+		Timeout:               1 * time.Second,  // Wait 1 second for the ping ack before assuming the connection is dead
+	}
 
 	// Create gRPC server
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(math.MaxInt32),
 		grpc.MaxSendMsgSize(math.MaxInt32),
+		grpc.KeepaliveEnforcementPolicy(kaep),
+		grpc.KeepaliveParams(kasp),
 	)
 	proxyv1.RegisterTxnProxyServiceServer(grpcServer, tikvProxy)
 
@@ -150,4 +175,25 @@ func tikvProxyAction(c *cli.Context) error {
 	logger.Info("TiKV Proxy server stopped")
 
 	return nil
+}
+
+
+
+
+func getLocalIP() (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", err
+	}
+
+	for _, addr := range addrs {
+		// 检查是否为 IP 地址，并且不是回环地址（127.0.0.1）
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			// 优先返回 IPv4 地址
+			if ipNet.IP.To4() != nil {
+				return ipNet.IP.String(), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("无法获取本机 IP 地址")
 }
