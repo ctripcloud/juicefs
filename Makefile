@@ -24,7 +24,7 @@ endif
 juicefs: Makefile cmd/*.go pkg/*/*.go go.*
 	go version
 	go generate
-	go build -ldflags="$(LDFLAGS)"  -o juicefs .
+	go build -mod=vendor -ldflags="$(LDFLAGS)"  -o juicefs .
 
 juicefs.cover: Makefile cmd/*.go pkg/*/*.go go.*
 	go version
@@ -56,7 +56,7 @@ juicefs.all: Makefile cmd/*.go pkg/*/*.go
 # Please execute the `brew install FiloSottile/musl-cross/musl-cross` command before using it.
 juicefs.linux:
 	go generate
-	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC=x86_64-linux-musl-gcc CGO_LDFLAGS="-static" go build -ldflags="$(LDFLAGS)"  -o juicefs .
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC=x86_64-linux-musl-gcc CGO_LDFLAGS="-static" go build -mod=vendor -ldflags="$(LDFLAGS)"  -o juicefs .
 
 /usr/local/include/winfsp:
 	sudo mkdir -p /usr/local/include/winfsp
