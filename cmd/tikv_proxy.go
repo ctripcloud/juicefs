@@ -21,19 +21,26 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path"
 	"syscall"
 	"time"
 
-	"google.golang.org/grpc/keepalive"
+	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
+	"github.com/juicedata/juicefs/pkg/metric"
 	"github.com/juicedata/juicefs/pkg/proxy"
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
+	"github.com/juicedata/juicefs/pkg/version"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/urfave/cli/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 )
 
@@ -70,8 +77,89 @@ Details: https://juicefs.com/docs/community/tikv_proxy`,
 				Usage: "port to listen on",
 				Value: "8080",
 			},
+			&cli.StringFlag{
+				Name:  "metrics",
+				Usage: "address to expose metrics (e.g., 0.0.0.0:2112)",
+			},
 		},
 	}
+}
+
+func proxyExposeMetrics(c *cli.Context, registerer prometheus.Registerer, registry *prometheus.Registry) string {
+	var ip, port string
+	var err error
+
+	if c.IsSet("metrics") {
+		metricsAddr := c.String("metrics")
+		ip, port, err = net.SplitHostPort(metricsAddr)
+		if err != nil {
+			logger.Fatalf("Invalid format for --metrics flag '%s': %v", metricsAddr, err)
+		}
+	} else {
+		ip, err = getLocalIP()
+		if err != nil {
+			logger.Errorf("Get local ip failed, use 0.0.0.0 as fallback: %v", err)
+			ip = "0.0.0.0"
+		}
+		port = "0"
+	}
+
+	go metric.UpdateMetrics(registerer)
+
+	// 创建并注册 BuildInfoCollector
+	registerer.MustRegister(collectors.NewBuildInfoCollector())
+
+	// 设置HTTP处理器来暴露指标
+	http.Handle("/metrics", promhttp.HandlerFor(
+		registry,
+		promhttp.HandlerOpts{
+			EnableOpenMetrics: false,
+		},
+	))
+
+	// 尝试在指定的IP和端口上监听
+	listenAddr := net.JoinHostPort(ip, port)
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		if c.IsSet("metrics") {
+			logger.Errorf("Listen on metrics address %s failed: %v", listenAddr, err)
+			return ""
+		}
+		logger.Errorf("Listen on auto-assigned metrics address failed: %v", err)
+		return ""
+	}
+
+	// 启动HTTP服务器来处理指标请求
+	go func() {
+		if err := http.Serve(ln, nil); err != nil {
+			logger.Errorf("Metrics server failed: %s", err)
+		}
+	}()
+
+	proxyMetricsAddr := ln.Addr().String()
+	logger.Infof("Prometheus metrics listening on %s", proxyMetricsAddr)
+	return proxyMetricsAddr
+}
+
+func proxyWrapRegister(c *cli.Context) (*grpcprom.ServerMetrics, prometheus.Registerer, *prometheus.Registry) {
+	commonLabels := prometheus.Labels{"juicefs_version": version.Version()}
+	if h, err := os.Hostname(); err == nil {
+		commonLabels["instance"] = h
+	} else {
+		logger.Warnf("cannot get hostname: %s", err)
+	}
+	// 创建Prometheus监控器
+	srvMetrics := grpcprom.NewServerMetrics()
+
+	registry := prometheus.NewRegistry()
+
+	registerer := prometheus.WrapRegistererWithPrefix("tikv_proxy_", prometheus.WrapRegistererWith(commonLabels, registry))
+
+	registerer.MustRegister(srvMetrics)
+	registerer.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	registerer.MustRegister(collectors.NewGoCollector())
+
+	return srvMetrics, registerer, registry
 }
 
 func tikvProxyAction(c *cli.Context) error {
@@ -99,7 +187,7 @@ func tikvProxyAction(c *cli.Context) error {
 		MinTime:             5 * time.Second, // If a client pings more than once every 5 seconds, terminate the connection
 		PermitWithoutStream: true,            // Allow pings even when there are no active streams
 	}
-	
+
 	var kasp = keepalive.ServerParameters{
 		MaxConnectionIdle:     15 * time.Second, // If a client is idle for 15 seconds, send a GOAWAY
 		MaxConnectionAge:      30 * time.Second, // If any connection is alive for more than 30 seconds, send a GOAWAY
@@ -108,18 +196,30 @@ func tikvProxyAction(c *cli.Context) error {
 		Timeout:               1 * time.Second,  // Wait 1 second for the ping ack before assuming the connection is dead
 	}
 
+	// Wrap the default registry, all prometheus.MustRegister() calls should be afterwards
+	srvMetrics, registerer, registry := proxyWrapRegister(c)
+
 	// Create gRPC server
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(math.MaxInt32),
 		grpc.MaxSendMsgSize(math.MaxInt32),
 		grpc.KeepaliveEnforcementPolicy(kaep),
 		grpc.KeepaliveParams(kasp),
+		grpc.ChainUnaryInterceptor(
+			srvMetrics.UnaryServerInterceptor(),
+		),
+		grpc.ChainStreamInterceptor(
+			srvMetrics.StreamServerInterceptor(),
+		),
 	)
 	proxyv1.RegisterTxnProxyServiceServer(grpcServer, tikvProxy)
+	srvMetrics.InitializeMetrics(grpcServer)
 
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
+
+	proxyExposeMetrics(c, registerer, registry)
 
 	go func() {
 		next := grpc_health_v1.HealthCheckResponse_SERVING
@@ -176,9 +276,6 @@ func tikvProxyAction(c *cli.Context) error {
 
 	return nil
 }
-
-
-
 
 func getLocalIP() (string, error) {
 	addrs, err := net.InterfaceAddrs()
