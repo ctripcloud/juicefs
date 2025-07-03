@@ -127,3 +127,8 @@ proto-clean: ## Clean generated protobuf code
 	@echo "Cleaning generated protobuf code..."
 	@rm -rf $(PROTO_OUT_DIR)/*.pb.go
 	@echo "Protobuf code cleanup completed"
+
+
+.PHONY: build-proxy-image
+build-proxy-image:
+	docker build   --build-context project=. -t hub.cloud.ctripcorp.com/juicedata/proxy:trip-${REVISION}-$(REVISIONDATE) -f pkg/proxy/proxy.Dockerfile .

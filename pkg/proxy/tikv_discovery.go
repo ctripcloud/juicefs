@@ -42,19 +42,19 @@ type ProxyDiscovery struct {
 
 var (
 	tikvProxyDiscoveryAliveMetric = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "tikv_proxy_discovery_alive",
+		Name: "alive_proxies_count",
 		Help: "The number of alive tikv proxies.",
 	})
 	tikvProxyDiscoveryErrorCount = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "tikv_proxy_discovery_error_count",
+		Name: "error_count",
 		Help: "The number of errors in tikv proxy discovery.",
 	})
 	tikvProxyDiscoveryLastCheckTime = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "tikv_proxy_discovery_last_check_time",
+		Name: "last_check_time",
 		Help: "The last time tikv proxy discovery was checked.",
 	})
 	tikvProxyDiscoveryRequestCount = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "tikv_proxy_discovery_request_count",
+		Name: "request_count",
 		Help: "The number of requests to tikv proxy discovery.",
 	}, []string{"method"})
 )

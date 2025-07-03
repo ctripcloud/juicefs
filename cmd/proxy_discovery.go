@@ -172,6 +172,7 @@ func proxyDiscoveryAction(c *cli.Context) error {
 	// Setup metrics
 	registerer, registry := discoveryWrapRegister(c)
 	discoveryExposeMetrics(c, registerer, registry)
+	proxy.InitTikvProxyDiscoveryMetrics(registerer)
 
 	// Create proxy discovery service
 	ctx, cancel := context.WithCancel(context.Background())
@@ -182,7 +183,6 @@ func proxyDiscoveryAction(c *cli.Context) error {
 		time.Sleep(time.Second * 10)
 		logger.Fatalf("Failed to create proxy discovery: %v", err)
 	}
-	proxy.InitTikvProxyDiscoveryMetrics(registerer)
 	defer pd.Shutdown()
 
 	// Set initial health status
