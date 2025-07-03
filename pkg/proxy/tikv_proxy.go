@@ -35,6 +35,7 @@ const (
 var (
 	tikvProxySessionHeartbeatInterval = time.Second * 3
 	tikvProxySessionHeartbeatTimeout  = time.Second * 10
+	tikvProxyCommitTimeout            = time.Second * 15
 )
 
 // TiKVProxy implements proxy for tikv with transaction management
@@ -116,6 +117,9 @@ func NewTiKVProxy(addr string, proxyAddr string) (*TiKVProxy, error) {
 		go proxy.Register(ctx, proxyAddr)
 		go proxy.CleanExpiredProxies(ctx)
 	}
+	if err := proxy.HealthCheck(ctx); err != nil {
+		return nil, fmt.Errorf("health check failed: %v", err)
+	}
 	return proxy, nil
 }
 
@@ -188,7 +192,7 @@ func (p *TiKVProxy) Register(ctx context.Context, proxyAddr string) error {
 	setActiveTime := func() error {
 		currentTime := uint64(time.Now().Unix())
 		sessionKey := fmt.Sprintf("%s%s", tikvProxySessionKeyPrefix, proxyAddr)
-		commitCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		commitCtx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 		defer cancel()
 		ts := make([]byte, 8)
 		binary.BigEndian.PutUint64(ts, currentTime)
@@ -269,7 +273,7 @@ func (p *TiKVProxy) GetAllProxies(ctx context.Context) (map[string]uint64, uint6
 }
 
 func (p *TiKVProxy) CleanExpiredProxies(ctx context.Context) error {
-	timer := time.NewTicker(time.Second * 10)
+	timer := time.NewTicker(time.Second * 60)
 	for {
 		select {
 		case <-ctx.Done():
@@ -292,7 +296,7 @@ func (p *TiKVProxy) CleanExpiredProxies(ctx context.Context) error {
 				}
 				needClean := make([][]byte, 0)
 				for proxy, activeTime := range proxies {
-					if activeTime < now-uint64(9*tikvProxySessionHeartbeatTimeout.Seconds()/10) {
+					if activeTime < now-uint64(10 *tikvProxySessionHeartbeatTimeout.Seconds()/9) {
 						logger.Debugf("clean expired proxy %s, active time is %d, now is %d", proxy, activeTime, now)
 						needClean = append(needClean, []byte(fmt.Sprintf("%s%s", tikvProxySessionKeyPrefix, proxy)))
 					}
@@ -530,7 +534,7 @@ func (p *TiKVProxy) Commit(ctx context.Context, req *proxyv1.CommitRequest) (*pr
 
 	// Use a separate context for commit to ensure it completes even if client disconnects
 	// We use background context with a reasonable timeout to prevent hanging indefinitely
-	commitCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	commitCtx, cancel := context.WithTimeout(context.Background(), tikvProxyCommitTimeout)
 	defer cancel()
 
 	if err := txn.Commit(commitCtx); err != nil {
