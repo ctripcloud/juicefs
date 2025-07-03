@@ -15,7 +15,7 @@ import (
 )
 
 type proxyResponse struct {
-	Proxy   string `json:"proxy"`
+	Proxy     string `json:"proxy"`
 	ClusterID uint64 `json:"cluster_id"`
 	StartTS   uint64 `json:"start_ts"`
 }
@@ -23,24 +23,40 @@ type proxyResponse struct {
 const (
 	// DiscoveryScheme is the scheme for discovery resolver
 	DiscoveryScheme = "tikv-proxy"
+	// Default discovery interval
+	DefaultDiscoveryInterval = 15 * time.Second
+	// Max retry attempts for initial discovery
+	MaxInitialRetryAttempts = 10
+	// HTTP client timeout
+	DefaultHTTPTimeout = 5 * time.Second
 )
 
-func init() {
-	// Register the discovery resolver
-	resolver.Register(NewServiceDiscovery())
-}
+// Note: resolver registration is handled in tikv_tikv_proxy.go to avoid duplicate registration
 
 // ServiceDiscovery 服务发现
 type ServiceDiscovery struct {
-	logger *logrus.Entry
+	logger     *logrus.Entry
+	httpClient *http.Client
 }
 
 // NewServiceDiscovery 新建发现服务
 func NewServiceDiscovery() resolver.Builder {
 	logger := logger.WithField("component", "grpc-discovery-builder")
 	logger.Debugf("NewServiceDiscovery")
+
+	// Create HTTP client with proper timeouts
+	httpClient := &http.Client{
+		Timeout: DefaultHTTPTimeout,
+		Transport: &http.Transport{
+			MaxIdleConns:        10,
+			MaxIdleConnsPerHost: 2,
+			IdleConnTimeout:     30 * time.Second,
+		},
+	}
+
 	return &ServiceDiscovery{
-		logger: logger,
+		logger:     logger,
+		httpClient: httpClient,
 	}
 }
 
@@ -55,31 +71,33 @@ func (s *ServiceDiscovery) Build(target resolver.Target, cc resolver.ClientConn,
 		ctx:              ctx,
 		cancel:           cancel,
 		logger:           s.logger.WithField("target", target.URL.Host),
+		httpClient:       s.httpClient,
 		serverList:       make(map[string]resolver.Address),
 		currentClusterID: 0,
 		currentStartTS:   0,
 	}
 
-	// 获取初始服务列表，重试50次，每次间隔100ms
+	// 获取初始服务列表，使用指数退避重试
 	var lastErr error
-	for i := 0; i < 50; i++ {
+	backoff := 100 * time.Millisecond
+	for i := 0; i < MaxInitialRetryAttempts; i++ {
 		if err := r.updateServiceList(); err != nil {
 			lastErr = err
-			if i%10 == 0 {
-				s.logger.Debugf("Failed to get initial service list (attempt %d/50): %v", i+1, err)
-			}
-			if i < 49 { // 最后一次不需要sleep
-				time.Sleep(100 * time.Millisecond)
+			r.logger.Debugf("Failed to get initial service list (attempt %d/%d): %v", i+1, MaxInitialRetryAttempts, err)
+			if i < MaxInitialRetryAttempts-1 { // 最后一次不需要sleep
+				time.Sleep(backoff)
+				backoff = minDuration(backoff*2, 10*time.Second) // 指数退避，最大10秒
 			}
 		} else {
-			s.logger.Infof("Successfully got initial service list on attempt %d, got proxies: %v", i+1, r.GetCurrentAddresses())
+			r.logger.Infof("Successfully got initial service list on attempt %d, got proxies: %v", i+1, r.GetCurrentAddresses())
 			lastErr = nil
 			break
 		}
 	}
 
 	if lastErr != nil {
-		logger.Fatalf("Failed to get initial service list after 50 attempts: %v", lastErr)
+		// 返回错误而不是Fatal退出
+		return nil, fmt.Errorf("failed to get initial service list after %d attempts: %v", MaxInitialRetryAttempts, lastErr)
 	}
 
 	// 启动监听器
@@ -95,16 +113,19 @@ func (s *ServiceDiscovery) Scheme() string {
 
 // discoveryResolver 实现 resolver.Resolver 接口
 type discoveryResolver struct {
-	target resolver.Target
-	cc     resolver.ClientConn
-	ctx    context.Context
-	cancel context.CancelFunc
-	logger *logrus.Entry
+	target     resolver.Target
+	cc         resolver.ClientConn
+	ctx        context.Context
+	cancel     context.CancelFunc
+	logger     *logrus.Entry
+	httpClient *http.Client
 
 	lock             sync.RWMutex
 	serverList       map[string]resolver.Address // 服务列表
 	currentClusterID uint64
 	currentStartTS   uint64
+	lastError        error
+	errorCount       int
 }
 
 // ResolveNow 监视目标更新
@@ -120,19 +141,32 @@ func (r *discoveryResolver) Close() {
 
 // watcher 监听服务变化
 func (r *discoveryResolver) watcher() {
-	r.logger.Info("Starting discovery watcher every 1 second")
-	ticker := time.NewTicker(1 * time.Second) // 每秒检查一次
+	r.logger.Infof("Starting discovery watcher with interval %v", DefaultDiscoveryInterval)
+	ticker := time.NewTicker(DefaultDiscoveryInterval)
 	defer ticker.Stop()
 
 	for {
-		if err := r.updateServiceList(); err != nil {
-			r.logger.Errorf("Failed to update service list: %v", err)
-		}
 		select {
 		case <-r.ctx.Done():
 			r.logger.Info("Discovery watcher stopped")
 			return
 		case <-ticker.C:
+			if err := r.updateServiceList(); err != nil {
+				r.lock.Lock()
+				r.errorCount++
+				r.lastError = err
+				r.lock.Unlock()
+
+				r.logger.Errorf("Failed to update service list (error count: %d): %v", r.errorCount, err)
+			} else {
+				r.lock.Lock()
+				if r.errorCount > 0 {
+					r.logger.Infof("Service discovery recovered after %d errors", r.errorCount)
+					r.errorCount = 0
+					r.lastError = nil
+				}
+				r.lock.Unlock()
+			}
 		}
 	}
 }
@@ -221,7 +255,7 @@ func (r *discoveryResolver) getDiscoveryURL() string {
 
 // fetchAddresses 从 discovery 服务获取地址列表
 func (r *discoveryResolver) fetchAddresses(discoveryURL string) ([]resolver.Address, uint64, uint64, error) {
-	ctx, cancel := context.WithTimeout(r.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.ctx, DefaultHTTPTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", discoveryURL, nil)
@@ -229,7 +263,7 @@ func (r *discoveryResolver) fetchAddresses(discoveryURL string) ([]resolver.Addr
 		return nil, 0, 0, fmt.Errorf("failed to create request: %v", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := r.httpClient.Do(req)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("failed to fetch discovery data: %v", err)
 	}
@@ -352,4 +386,26 @@ func (r *discoveryResolver) GetCurrentClusterID() uint64 {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
 	return r.currentClusterID
+}
+
+// Helper function
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// GetLastError 获取最后一次错误（用于调试）
+func (r *discoveryResolver) GetLastError() error {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	return r.lastError
+}
+
+// GetErrorCount 获取错误计数（用于调试）
+func (r *discoveryResolver) GetErrorCount() int {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	return r.errorCount
 }

@@ -10,7 +10,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
+)
+
+var (
+	tikvProxyDiscoveryInterval = time.Second * 5
 )
 
 type tProxy interface {
@@ -33,6 +38,34 @@ type ProxyDiscovery struct {
 	proxyAddr    string
 	ctx          context.Context
 	shutdownOnce sync.Once
+}
+
+var (
+	tikvProxyDiscoveryAliveMetric = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "tikv_proxy_discovery_alive",
+		Help: "The number of alive tikv proxies.",
+	})
+	tikvProxyDiscoveryErrorCount = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "tikv_proxy_discovery_error_count",
+		Help: "The number of errors in tikv proxy discovery.",
+	})
+	tikvProxyDiscoveryLastCheckTime = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "tikv_proxy_discovery_last_check_time",
+		Help: "The last time tikv proxy discovery was checked.",
+	})
+	tikvProxyDiscoveryRequestCount = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "tikv_proxy_discovery_request_count",
+		Help: "The number of requests to tikv proxy discovery.",
+	}, []string{"method"})
+)
+
+func InitTikvProxyDiscoveryMetrics(reg prometheus.Registerer) {
+	if reg != nil {
+		reg.MustRegister(tikvProxyDiscoveryAliveMetric)
+		reg.MustRegister(tikvProxyDiscoveryErrorCount)
+		reg.MustRegister(tikvProxyDiscoveryLastCheckTime)
+		reg.MustRegister(tikvProxyDiscoveryRequestCount)
+	}
 }
 
 func NewProxyDiscovery(ctx context.Context, addr string, proxyAddr string) (*ProxyDiscovery, error) {
@@ -99,7 +132,7 @@ func (pd *ProxyDiscovery) Shutdown() error {
 }
 
 func (pd *ProxyDiscovery) updateProxies() {
-	ticker := time.NewTicker(tikvProxySessionHeartbeatInterval)
+	ticker := time.NewTicker(tikvProxyDiscoveryInterval)
 	defer ticker.Stop()
 
 	f := func() {
@@ -124,6 +157,8 @@ func (pd *ProxyDiscovery) updateProxies() {
 			}
 		}
 		pd.proxyCache = activeProxies
+		tikvProxyDiscoveryAliveMetric.Set(float64(len(activeProxies)))
+		tikvProxyDiscoveryLastCheckTime.Set(float64(now))
 		logger.Debugf("update proxies, active proxies: %v", activeProxies)
 	}
 
@@ -142,8 +177,10 @@ func (pd *ProxyDiscovery) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/discovery":
 		pd.handleDiscovery(w, r)
+		tikvProxyDiscoveryRequestCount.WithLabelValues("discovery").Inc()
 	case "/health":
 		pd.handleHealth(w, r)
+		tikvProxyDiscoveryRequestCount.WithLabelValues("health").Inc()
 	default:
 		http.NotFound(w, r)
 	}

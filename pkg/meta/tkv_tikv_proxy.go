@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/pkg/errors"
 
 	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
@@ -50,10 +51,20 @@ const (
 
 	dialTimeout      = 5 * time.Second
 	keepAlive        = 10 * time.Second
-	keepAliveTimeout = time.Second
+	keepAliveTimeout = 3 * time.Second // 增加到3秒，与服务发现配合更好
 )
 
 var batchSize = DirBatchNum["kv"] + 1
+
+var (
+	tikv_proxy_grpc_failed_count = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "meta_tikv_proxy_grpc_failed_count",
+			Help: "The number of failed gRPC requests.",
+		},
+		[]string{"method"},
+	)
+)
 
 func init() {
 	Register("tikv-proxy", newKVMeta)
@@ -68,6 +79,7 @@ type tikvProxyTxn struct {
 }
 
 func (tx *tikvProxyTxn) get(key []byte) []byte {
+	defer opMetrics("get")
 	logger.Debugf("get key: %s, startTS: %d", string(key), tx.startTS)
 	if v, ok := tx.writes[string(key)]; ok {
 		logger.Debugf("because of deleted key, return nil")
@@ -102,6 +114,7 @@ func (tx *tikvProxyTxn) get(key []byte) []byte {
 }
 
 func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
+	defer opMetrics("gets")
 	values := make([][]byte, len(keys))
 	remoteKeys := make([][]byte, 0, len(keys))
 
@@ -148,6 +161,7 @@ func (tx *tikvProxyTxn) gets(keys ...[]byte) [][]byte {
 }
 
 func (tx *tikvProxyTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v []byte) bool) {
+	defer opMetrics("scan")
 	logger.Debugf("scan begin: %s, end: %s, startTS: %d", string(begin), string(end), tx.startTS)
 	skipFirst := false
 	for {
@@ -229,6 +243,7 @@ func (tx *tikvProxyTxn) incrBy(key []byte, value int64) int64 {
 }
 
 func (tx *tikvProxyTxn) delete(key []byte) {
+	defer opMetrics("delete")
 	logger.Debugf("delete key: %s, startTS: %d", string(key), tx.startTS)
 	if tx.writes == nil {
 		tx.writes = make(map[string][]byte)
@@ -237,6 +252,7 @@ func (tx *tikvProxyTxn) delete(key []byte) {
 }
 
 func (tx *tikvProxyTxn) commit() error {
+	defer opMetrics("commit")
 	logger.Debugf("Commit startTS: %d", tx.startTS)
 	if len(tx.writes) == 0 {
 		logger.Debugf("no buffer to commit")
@@ -288,9 +304,9 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 			MinConnectTimeout: dialTimeout,
 		}),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:    keepAlive,
-			Timeout: keepAliveTimeout,
-			PermitWithoutStream: true,             // send pings even without active streams
+			Time:                keepAlive,
+			Timeout:             keepAliveTimeout,
+			PermitWithoutStream: true, // send pings even without active streams
 		}),
 		grpc.WithDefaultServiceConfig(`{
 			"loadBalancingPolicy": "round_robin",
@@ -379,6 +395,7 @@ func (c *tikvProxyClient) shouldRetry(err error) bool {
 			return true
 		}
 	}
+	tikv_proxy_grpc_failed_count.WithLabelValues("grpc").Inc()
 	return false
 }
 
@@ -415,6 +432,7 @@ func (c *tikvProxyClient) txn(f func(*kvTxn) error, retry int) (err error) {
 }
 
 func (c *tikvProxyClient) scan(prefix []byte, handler func(key, value []byte)) error {
+	defer opMetrics("scan")
 	skipFirst := false
 	endKey := nextKey(prefix)
 	for {

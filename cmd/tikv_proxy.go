@@ -44,6 +44,13 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
+var (
+	tikvProxyHealthMetric = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "health_status",
+		Help: "Health status of the TiKV proxy",
+	})
+)
+
 func cmdTiKVProxy() *cli.Command {
 	return &cli.Command{
 		Name:      "tikv-proxy",
@@ -148,13 +155,18 @@ func proxyWrapRegister(c *cli.Context) (*grpcprom.ServerMetrics, prometheus.Regi
 	} else {
 		logger.Warnf("cannot get hostname: %s", err)
 	}
-	// 创建Prometheus监控器
-	srvMetrics := grpcprom.NewServerMetrics()
+	// 创建Prometheus监控器，启用处理时间histogram来记录延迟分布
+	srvMetrics := grpcprom.NewServerMetrics(
+		grpcprom.WithServerCounterOptions(),
+		grpcprom.WithServerHandlingTimeHistogram(), // record the overall response latency for a gRPC request)
+
+	)
 
 	registry := prometheus.NewRegistry()
 
 	registerer := prometheus.WrapRegistererWithPrefix("tikv_proxy_", prometheus.WrapRegistererWith(commonLabels, registry))
 
+	registerer.MustRegister(tikvProxyHealthMetric)
 	registerer.MustRegister(srvMetrics)
 	registerer.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	registerer.MustRegister(collectors.NewGoCollector())
@@ -227,9 +239,19 @@ func tikvProxyAction(c *cli.Context) error {
 			err := tikvProxy.HealthCheck(context.Background())
 			if err != nil {
 				next = grpc_health_v1.HealthCheckResponse_NOT_SERVING
-			} else {
-				next = grpc_health_v1.HealthCheckResponse_SERVING
+				tikvProxyHealthMetric.Set(0)
+				time.Sleep(3 * time.Second)
+				// double check
+				err = tikvProxy.HealthCheck(context.Background())
+				if err != nil {
+					grpcServer.GracefulStop()
+					time.Sleep(15 * time.Second)
+					logger.Fatalf("TiKV Proxy server health check failed: %v, will exit", err)
+				}
 			}
+			tikvProxyHealthMetric.Set(1)
+			next = grpc_health_v1.HealthCheckResponse_SERVING
+
 			healthServer.SetServingStatus("", next)
 			time.Sleep(3 * time.Second)
 		}
