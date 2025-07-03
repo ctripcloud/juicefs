@@ -29,6 +29,7 @@ require (
 	github.com/google/btree v1.1.2
 	github.com/google/uuid v1.6.0
 	github.com/grafana/pyroscope-go v1.0.4
+	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0
 	github.com/hanwen/go-fuse/v2 v2.1.1-0.20210611132105-24a1dfe6b4f8
 	github.com/hashicorp/consul/api v1.15.2
 	github.com/hashicorp/go-hclog v1.5.0
@@ -92,6 +93,7 @@ require (
 require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/go-resty/resty/v2 v2.11.0 // indirect
+	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.1.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.52.0 // indirect
 )
@@ -243,7 +245,7 @@ require (
 	go.uber.org/multierr v1.7.0 // indirect
 	golang.org/x/time v0.3.0
 	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2 // indirect
-	google.golang.org/appengine v1.6.7 // indirect
+	google.golang.org/appengine v1.6.8 // indirect
 	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1 // indirect
 	google.golang.org/grpc v1.65.0
 	gopkg.in/ini.v1 v1.57.0 // indirect
