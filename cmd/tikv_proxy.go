@@ -171,6 +171,10 @@ func proxyWrapRegister(c *cli.Context, customCollectors []prometheus.Collector) 
 	registerer.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	registerer.MustRegister(collectors.NewGoCollector())
 
+	for _, collector := range customCollectors {
+		registerer.MustRegister(collector)
+	}
+
 	return srvMetrics, registerer, registry
 }
 
@@ -209,7 +213,8 @@ func tikvProxyAction(c *cli.Context) error {
 	}
 
 	// Wrap the default registry, all prometheus.MustRegister() calls should be afterwards
-	srvMetrics, registerer, registry := proxyWrapRegister(c)
+	proxyCollectors := tikvProxy.Metrics()
+	srvMetrics, registerer, registry := proxyWrapRegister(c, proxyCollectors)
 
 	// Create gRPC server
 	grpcServer := grpc.NewServer(
