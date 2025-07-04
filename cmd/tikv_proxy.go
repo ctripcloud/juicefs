@@ -32,7 +32,6 @@ import (
 	"github.com/juicedata/juicefs/pkg/metric"
 	"github.com/juicedata/juicefs/pkg/proxy"
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
-	"github.com/juicedata/juicefs/pkg/version"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -148,8 +147,9 @@ func proxyExposeMetrics(c *cli.Context, registerer prometheus.Registerer, regist
 	return proxyMetricsAddr
 }
 
-func proxyWrapRegister(c *cli.Context) (*grpcprom.ServerMetrics, prometheus.Registerer, *prometheus.Registry) {
-	commonLabels := prometheus.Labels{"juicefs_version": version.Version()}
+func proxyWrapRegister(c *cli.Context, customCollectors []prometheus.Collector) (*grpcprom.ServerMetrics, prometheus.Registerer, *prometheus.Registry) {
+	tikvAddr := c.Args().Get(0)
+	commonLabels := prometheus.Labels{"tikv_addr": tikvAddr}
 	if h, err := os.Hostname(); err == nil {
 		commonLabels["instance"] = h
 	} else {

@@ -27,7 +27,6 @@ import (
 
 	"github.com/juicedata/juicefs/pkg/metric"
 	"github.com/juicedata/juicefs/pkg/proxy"
-	"github.com/juicedata/juicefs/pkg/version"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -136,7 +135,8 @@ func discoveryExposeMetrics(c *cli.Context, registerer prometheus.Registerer, re
 
 // Create registerer for proxy discovery service (no gRPC metrics needed)
 func discoveryWrapRegister(c *cli.Context) (prometheus.Registerer, *prometheus.Registry) {
-	commonLabels := prometheus.Labels{"juicefs_version": version.Version()}
+	tikvAddr := c.Args().Get(0)
+	commonLabels := prometheus.Labels{"tikv_addr": tikvAddr}
 	if h, err := os.Hostname(); err == nil {
 		commonLabels["instance"] = h
 	} else {
