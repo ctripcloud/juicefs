@@ -15,6 +15,7 @@ import (
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
 	"github.com/juicedata/juicefs/pkg/utils"
 	plog "github.com/pingcap/log"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	"github.com/tikv/client-go/v2/config"
 	tikverr "github.com/tikv/client-go/v2/error"
@@ -47,6 +48,7 @@ type TiKVProxy struct {
 	closed    bool
 	mu        sync.RWMutex
 	proxyv1.UnimplementedTxnProxyServiceServer
+	lastRegisterSuccessMetric prometheus.Gauge
 }
 
 var logger = utils.GetLogger("juicefs")
@@ -111,6 +113,12 @@ func NewTiKVProxy(addr string, proxyAddr string) (*TiKVProxy, error) {
 		client:    client,
 		cancel:    cancel,
 		clusterID: client.GetClusterID(),
+		lastRegisterSuccessMetric: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "last_register_success_timestamp_seconds",
+				Help: "Unix timestamp of the last successful register to TiKV.",
+			},
+		),
 	}
 	if proxyAddr != "" {
 		logger.Infof("proxy discovery is enabled, proxy addr is %s", proxyAddr)
@@ -207,13 +215,24 @@ func (p *TiKVProxy) Register(ctx context.Context, proxyAddr string) error {
 		return nil
 	}
 	for {
-		retry(ctx, setActiveTime, 5)
+		err := retry(ctx, setActiveTime, 5)
+		if err == nil {
+			// 当心跳成功时，更新 Gauge 的值为当前 Unix 时间戳
+			p.lastRegisterSuccessMetric.Set(float64(time.Now().Unix()))
+		}
+
 		select {
 		case <-ctx.Done():
 			logger.Infof("register context done")
 			return ctx.Err()
 		case <-timer.C:
 		}
+	}
+}
+
+func (p *TiKVProxy) Metrics() []prometheus.Collector {
+	return []prometheus.Collector{
+		p.lastRegisterSuccessMetric,
 	}
 }
 
@@ -296,7 +315,7 @@ func (p *TiKVProxy) CleanExpiredProxies(ctx context.Context) error {
 				}
 				needClean := make([][]byte, 0)
 				for proxy, activeTime := range proxies {
-					if activeTime < now-uint64(10 *tikvProxySessionHeartbeatTimeout.Seconds()/9) {
+					if activeTime < now-uint64(10*tikvProxySessionHeartbeatTimeout.Seconds()/9) {
 						logger.Debugf("clean expired proxy %s, active time is %d, now is %d", proxy, activeTime, now)
 						needClean = append(needClean, []byte(fmt.Sprintf("%s%s", tikvProxySessionKeyPrefix, proxy)))
 					}
