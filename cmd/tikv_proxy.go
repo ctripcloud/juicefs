@@ -22,6 +22,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"path"
@@ -37,8 +38,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/urfave/cli/v2"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
-	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 )
@@ -86,6 +85,11 @@ Details: https://juicefs.com/docs/community/tikv_proxy`,
 			&cli.StringFlag{
 				Name:  "metrics",
 				Usage: "address to expose metrics (e.g., 0.0.0.0:2112)",
+			},
+			&cli.StringFlag{
+				Name:  "pprof-port",
+				Usage: "port to expose pprof debug info",
+				Value: "33899",
 			},
 		},
 	}
@@ -174,6 +178,27 @@ func proxyWrapRegister(c *cli.Context) (*grpcprom.ServerMetrics, prometheus.Regi
 	return srvMetrics, registerer, registry
 }
 
+func proxyStartPprof(c *cli.Context) string {
+	pprofPort := c.String("pprof-port")
+	localIP, err := getLocalIP()
+	if err != nil {
+		logger.Errorf("Get local ip failed, use 0.0.0.0 as fallback: %v", err)
+		localIP = "0.0.0.0"
+	}
+
+	pprofAddr := fmt.Sprintf("%s:%s", localIP, pprofPort)
+
+	// Start pprof server
+	go func() {
+		logger.Infof("Starting pprof server on %s", pprofAddr)
+		if err := http.ListenAndServe(pprofAddr, nil); err != nil {
+			logger.Errorf("pprof server failed: %v", err)
+		}
+	}()
+
+	return pprofAddr
+}
+
 func tikvProxyAction(c *cli.Context) error {
 	setup(c, 1)
 
@@ -227,35 +252,54 @@ func tikvProxyAction(c *cli.Context) error {
 	proxyv1.RegisterTxnProxyServiceServer(grpcServer, tikvProxy)
 	srvMetrics.InitializeMetrics(grpcServer)
 
-	healthServer := health.NewServer()
-	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
-	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
-
 	proxyExposeMetrics(c, registerer, registry)
 
-	go func() {
-		next := grpc_health_v1.HealthCheckResponse_SERVING
-		for {
-			err := tikvProxy.HealthCheck(context.Background())
-			if err != nil {
-				next = grpc_health_v1.HealthCheckResponse_NOT_SERVING
-				tikvProxyHealthMetric.Set(0)
-				time.Sleep(3 * time.Second)
-				// double check
-				err = tikvProxy.HealthCheck(context.Background())
-				if err != nil {
-					grpcServer.GracefulStop()
-					time.Sleep(15 * time.Second)
-					logger.Fatalf("TiKV Proxy server health check failed: %v, will exit", err)
-				}
-			}
-			tikvProxyHealthMetric.Set(1)
-			next = grpc_health_v1.HealthCheckResponse_SERVING
+	// Handle graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-			healthServer.SetServingStatus("", next)
-			time.Sleep(3 * time.Second)
+	// Start health check goroutine
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				logger.Info("Health check goroutine stopping...")
+				return
+			case <-ticker.C:
+				// Create new context for each health check
+				checkCtx, checkCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				err := tikvProxy.HealthCheck(checkCtx)
+				checkCancel() // Always cancel immediately after use
+
+				if err != nil {
+					logger.Warnf("Health check failed: %v", err)
+					tikvProxyHealthMetric.Set(0)
+
+					// Wait before double check
+					time.Sleep(3 * time.Second)
+
+					// Double check with new context
+					doubleCheckCtx, doubleCheckCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					err = tikvProxy.HealthCheck(doubleCheckCtx)
+					doubleCheckCancel()
+
+					if err != nil {
+						logger.Errorf("Health check failed twice, shutting down: %v", err)
+						grpcServer.GracefulStop()
+						time.Sleep(15 * time.Second)
+						logger.Fatalf("TiKV Proxy server health check failed: %v, will exit", err)
+					}
+				}
+				tikvProxyHealthMetric.Set(1)
+			}
 		}
 	}()
+
+	// Start pprof server
+	proxyStartPprof(c)
 
 	reflection.Register(grpcServer)
 
@@ -267,10 +311,6 @@ func tikvProxyAction(c *cli.Context) error {
 
 	logger.Infof("TiKV Proxy server starting on %s", listenAddr)
 	logger.Infof("Connected to TiKV cluster: %s", tikvAddresses)
-
-	// Handle graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Start server in a goroutine
 	go func() {

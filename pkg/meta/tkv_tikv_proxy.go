@@ -69,6 +69,9 @@ var (
 func init() {
 	Register("tikv-proxy", newKVMeta)
 	drivers["tikv-proxy"] = newTikvProxyClient
+
+	r := NewServiceDiscovery()
+	resolver.Register(r)
 }
 
 type tikvProxyTxn struct {
@@ -312,9 +315,6 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 		}),
 		grpc.WithDefaultServiceConfig(`{
 			"loadBalancingPolicy": "round_robin",
-			"healthCheckConfig": {
-				"serviceName": ""
-			},
 			"methodConfig": [{
 				"name": [{"service": ""}],
 				"waitForReady": true,
@@ -340,8 +340,6 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 			return nil, fmt.Errorf("failed to connect to TiKV Proxy at %s: %v", tUrl.Host, err)
 		}
 	} else {
-		r := NewServiceDiscovery()
-		resolver.Register(r)
 		target := fmt.Sprintf("%s://%s", DiscoveryScheme, tUrl.Host)
 		conn, err = grpc.NewClient(target, opts...)
 		if err != nil {
