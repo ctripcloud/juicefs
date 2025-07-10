@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/resolver"
 )
@@ -19,6 +20,13 @@ type proxyResponse struct {
 	ClusterID uint64 `json:"cluster_id"`
 	StartTS   uint64 `json:"start_ts"`
 }
+
+var (
+	activeProxyCount = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "tikv_proxy_active_count",
+		Help: "Number of active proxies",
+	})
+)
 
 const (
 	// DiscoveryScheme is the scheme for discovery resolver
@@ -228,7 +236,9 @@ func (r *discoveryResolver) updateServiceList() error {
 		Addresses: addresses,
 	}
 
-	logger.Debugf("update service list, clusterID: %d, startTS: %d, serverList: %v", clusterID, startTS, newServerList)
+	activeProxyCount.Set(float64(len(addresses)))
+
+	logger.Infof("update service list, clusterID: %d, startTS: %d, serverList: %v", clusterID, startTS, newServerList)
 	if err := r.cc.UpdateState(state); err != nil {
 		return fmt.Errorf("failed to update client connection state: %v", err)
 	}

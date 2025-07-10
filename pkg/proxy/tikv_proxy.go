@@ -15,7 +15,6 @@ import (
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
 	"github.com/juicedata/juicefs/pkg/utils"
 	plog "github.com/pingcap/log"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	"github.com/tikv/client-go/v2/config"
 	tikverr "github.com/tikv/client-go/v2/error"
@@ -34,8 +33,8 @@ const (
 )
 
 var (
-	tikvProxySessionHeartbeatInterval = time.Second * 3
-	tikvProxySessionHeartbeatTimeout  = time.Second * 10
+	tikvProxySessionHeartbeatInterval = time.Second * 5
+	tikvProxySessionHeartbeatTimeout  = time.Second * 15
 	tikvProxyCommitTimeout            = time.Second * 15
 )
 
@@ -48,7 +47,6 @@ type TiKVProxy struct {
 	closed    bool
 	mu        sync.RWMutex
 	proxyv1.UnimplementedTxnProxyServiceServer
-	lastRegisterSuccessMetric prometheus.Gauge
 }
 
 var logger = utils.GetLogger("juicefs")
@@ -113,18 +111,13 @@ func NewTiKVProxy(addr string, proxyAddr string) (*TiKVProxy, error) {
 		client:    client,
 		cancel:    cancel,
 		clusterID: client.GetClusterID(),
-		lastRegisterSuccessMetric: prometheus.NewGauge(
-			prometheus.GaugeOpts{
-				Name: "last_register_success_timestamp_seconds",
-				Help: "Unix timestamp of the last successful register to TiKV.",
-			},
-		),
 	}
 	if proxyAddr != "" {
 		logger.Infof("proxy discovery is enabled, proxy addr is %s", proxyAddr)
 		go proxy.Register(ctx, proxyAddr)
 		go proxy.CleanExpiredProxies(ctx)
 	}
+	proxy.SetTestKey(ctx)
 	if err := proxy.HealthCheck(ctx); err != nil {
 		return nil, fmt.Errorf("health check failed: %v", err)
 	}
@@ -215,24 +208,13 @@ func (p *TiKVProxy) Register(ctx context.Context, proxyAddr string) error {
 		return nil
 	}
 	for {
-		err := retry(ctx, setActiveTime, 5)
-		if err == nil {
-			// 当心跳成功时，更新 Gauge 的值为当前 Unix 时间戳
-			p.lastRegisterSuccessMetric.Set(float64(time.Now().Unix()))
-		}
-
+		retry(ctx, setActiveTime, 5)
 		select {
 		case <-ctx.Done():
 			logger.Infof("register context done")
 			return ctx.Err()
 		case <-timer.C:
 		}
-	}
-}
-
-func (p *TiKVProxy) Metrics() []prometheus.Collector {
-	return []prometheus.Collector{
-		p.lastRegisterSuccessMetric,
 	}
 }
 
@@ -301,7 +283,7 @@ func (p *TiKVProxy) CleanExpiredProxies(ctx context.Context) error {
 		case <-timer.C:
 			retry(ctx, func() error {
 				now := uint64(time.Now().Unix())
-				ok, err := p.setIfSmall(ctx, tikvProxySessionLastCleanKey, now, 15)
+				ok, err := p.setIfSmall(ctx, tikvProxySessionLastCleanKey, now, 30)
 				if err != nil {
 					return err
 				}
@@ -366,9 +348,6 @@ func (p *TiKVProxy) Get(ctx context.Context, req *proxyv1.GetRequest) (*proxyv1.
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
 		}
-		if startTS == math.MaxUint64 {
-			txn.GetSnapshot().SetIsolationLevel(txnkv.RC) // RC isolation to skip lock checking in TiKV
-		}
 	} else {
 		txn, err = p.client.Begin()
 	}
@@ -404,9 +383,6 @@ func (p *TiKVProxy) BatchGet(ctx context.Context, req *proxyv1.BatchGetRequest) 
 		txn, err = p.client.Begin(tikv.WithStartTS(startTS))
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
-		}
-		if startTS == math.MaxUint64 {
-			txn.GetSnapshot().SetIsolationLevel(txnkv.RC) // RC isolation to skip lock checking in TiKV
 		}
 	} else {
 		txn, err = p.client.Begin()
@@ -455,13 +431,6 @@ func (p *TiKVProxy) Scan(ctx context.Context, req *proxyv1.ScanRequest) (*proxyv
 		txn, err = p.client.Begin(tikv.WithStartTS(startTS))
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to begin tikv transaction: %v", err)
-		}
-		if startTS == math.MaxUint64 {
-			txn.GetSnapshot().SetIsolationLevel(txnkv.RC) // RC isolation to skip lock checking in TiKV
-			if scanSize > 0 {
-				txn.GetSnapshot().SetScanBatchSize(scanSize)
-			}
-			txn.GetSnapshot().SetNotFillCache(true)
 		}
 	} else {
 		txn, err = p.client.Begin()
@@ -534,6 +503,7 @@ func (p *TiKVProxy) Commit(ctx context.Context, req *proxyv1.CommitRequest) (*pr
 	}
 
 	txn.SetEnable1PC(true)
+	txn.SetEnableAsyncCommit(true)
 
 	for i, k := range allKeys {
 		val := allValues[i]

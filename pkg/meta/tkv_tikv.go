@@ -74,6 +74,8 @@ func InitTikvMetrics(reg prometheus.Registerer) {
 		reg.MustRegister(opCount)
 		reg.MustRegister(inFlight)
 		reg.MustRegister(kvtxnRateLimitCount)
+		reg.MustRegister(tikv_proxy_grpc_failed_count)
+		reg.MustRegister(activeProxyCount)
 	}
 }
 

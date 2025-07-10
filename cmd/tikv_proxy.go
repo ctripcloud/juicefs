@@ -147,7 +147,7 @@ func proxyExposeMetrics(c *cli.Context, registerer prometheus.Registerer, regist
 	return proxyMetricsAddr
 }
 
-func proxyWrapRegister(c *cli.Context, customCollectors []prometheus.Collector) (*grpcprom.ServerMetrics, prometheus.Registerer, *prometheus.Registry) {
+func proxyWrapRegister(c *cli.Context) (*grpcprom.ServerMetrics, prometheus.Registerer, *prometheus.Registry) {
 	tikvAddr := c.Args().Get(0)
 	commonLabels := prometheus.Labels{"tikv_addr": tikvAddr}
 	if h, err := os.Hostname(); err == nil {
@@ -170,10 +170,6 @@ func proxyWrapRegister(c *cli.Context, customCollectors []prometheus.Collector) 
 	registerer.MustRegister(srvMetrics)
 	registerer.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	registerer.MustRegister(collectors.NewGoCollector())
-
-	for _, collector := range customCollectors {
-		registerer.MustRegister(collector)
-	}
 
 	return srvMetrics, registerer, registry
 }
@@ -213,8 +209,7 @@ func tikvProxyAction(c *cli.Context) error {
 	}
 
 	// Wrap the default registry, all prometheus.MustRegister() calls should be afterwards
-	proxyCollectors := tikvProxy.Metrics()
-	srvMetrics, registerer, registry := proxyWrapRegister(c, proxyCollectors)
+	srvMetrics, registerer, registry := proxyWrapRegister(c)
 
 	// Create gRPC server
 	grpcServer := grpc.NewServer(
