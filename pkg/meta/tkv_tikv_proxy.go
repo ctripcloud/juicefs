@@ -28,8 +28,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
 
 	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	proxyv1 "github.com/juicedata/juicefs/pkg/proxy/v1"
@@ -195,7 +195,7 @@ func (tx *tikvProxyTxn) scan(begin, end []byte, keysOnly bool, handler func(k, v
 }
 
 func (tx *tikvProxyTxn) exist(prefix []byte) bool {
-
+	defer opMetrics("exist")
 	resp, err := tx.client.Scan(context.TODO(), &proxyv1.ScanRequest{
 		StartTs:  tx.startTS,
 		StartKey: prefix,
@@ -218,6 +218,7 @@ func (tx *tikvProxyTxn) exist(prefix []byte) bool {
 }
 
 func (tx *tikvProxyTxn) set(key, value []byte) {
+	defer opMetrics("set")
 	if tx.writes == nil {
 		tx.writes = make(map[string][]byte)
 	}
@@ -225,6 +226,7 @@ func (tx *tikvProxyTxn) set(key, value []byte) {
 }
 
 func (tx *tikvProxyTxn) append(key []byte, value []byte) {
+	defer opMetrics("append")
 	logger.Debugf("append key: %s, value: %s, startTS: %d", string(key), string(value), tx.startTS)
 	existing := tx.get(key)
 	newValue := append(existing, value...)
@@ -232,6 +234,7 @@ func (tx *tikvProxyTxn) append(key []byte, value []byte) {
 }
 
 func (tx *tikvProxyTxn) incrBy(key []byte, value int64) int64 {
+	defer opMetrics("incrBy")
 	logger.Debugf("incrBy key: %s, value: %d, startTS: %d", string(key), value, tx.startTS)
 	existing := tx.get(key)
 	new := parseCounter(existing)
@@ -244,7 +247,6 @@ func (tx *tikvProxyTxn) incrBy(key []byte, value int64) int64 {
 
 func (tx *tikvProxyTxn) delete(key []byte) {
 	defer opMetrics("delete")
-	logger.Debugf("delete key: %s, startTS: %d", string(key), tx.startTS)
 	if tx.writes == nil {
 		tx.writes = make(map[string][]byte)
 	}
@@ -332,7 +334,7 @@ func newTikvProxyClient(addr string) (tkvClient, error) {
 
 	params := tUrl.Query()
 	discovery, ok := params["discovery"]
-	if !ok || discovery[0] != "true" {
+	if ok && discovery[0] == "false" {
 		conn, err = grpc.NewClient(tUrl.Host, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to TiKV Proxy at %s: %v", tUrl.Host, err)
@@ -381,12 +383,9 @@ func (c *tikvProxyClient) name() string {
 
 func (c *tikvProxyClient) shouldRetry(err error) bool {
 	// Check for specific error strings
-	if strings.Contains(err.Error(), "write conflict") || strings.Contains(err.Error(), "TxnLockNotFound") {
-		return true
-	}
-
-	// Check gRPC status codes
-	if st, ok := status.FromError(err); ok {
+	st, ok := status.FromError(err)
+	if ok {
+		tikv_proxy_grpc_failed_count.WithLabelValues(st.Code().String()).Inc()
 		switch st.Code() {
 		case codes.Unavailable, // Server is currently unavailable
 			codes.Internal,          // Internal errors
@@ -395,7 +394,10 @@ func (c *tikvProxyClient) shouldRetry(err error) bool {
 			return true
 		}
 	}
-	tikv_proxy_grpc_failed_count.WithLabelValues("grpc").Inc()
+
+	if strings.Contains(err.Error(), "write conflict") || strings.Contains(err.Error(), "TxnLockNotFound") {
+		return true
+	}
 	return false
 }
 
